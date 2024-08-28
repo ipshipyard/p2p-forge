@@ -2,14 +2,28 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	libp2pws "github.com/libp2p/go-libp2p/p2p/transport/websocket"
+	"github.com/multiformats/go-multiaddr"
+	madns "github.com/multiformats/go-multiaddr-dns"
+	"log"
+	"math/big"
 	"net"
+	"net/http"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
@@ -23,6 +37,11 @@ import (
 	_ "github.com/coredns/coredns/core/plugin" // Load all managed plugins in github.com/coredns/coredns.
 	_ "github.com/ipshipyard/p2p-forge/acme"
 	_ "github.com/ipshipyard/p2p-forge/ipparser"
+
+	pebbleCA "github.com/letsencrypt/pebble/v2/ca"
+	pebbleDB "github.com/letsencrypt/pebble/v2/db"
+	pebbleVA "github.com/letsencrypt/pebble/v2/va"
+	pebbleWFE "github.com/letsencrypt/pebble/v2/wfe"
 )
 
 const forge = "libp2p.direct"
@@ -330,6 +349,153 @@ func TestIPv6Lookup(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLibp2pACMEE2E(t *testing.T) {
+	db := pebbleDB.NewMemoryStore()
+	logger := log.New(os.Stdout, "", 0)
+	ca := pebbleCA.New(logger, db, "", 0, 1, 0)
+	va := pebbleVA.New(logger, 0, 0, false, dnsServerAddress, db)
+
+	wfeImpl := pebbleWFE.New(logger, db, va, ca, false, false, 3, 5)
+	muxHandler := wfeImpl.Handler()
+
+	acmeHTTPListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer acmeHTTPListener.Close()
+
+	// Generate the self-signed certificate and private key
+	certPEM, privPEM, err := generateSelfSignedCert("127.0.0.1")
+	if err != nil {
+		log.Fatalf("Failed to generate self-signed certificate: %v", err)
+	}
+
+	// Load the certificate and key into tls.Certificate
+	cert, err := tls.X509KeyPair(certPEM, privPEM)
+	if err != nil {
+		log.Fatalf("Failed to load key pair: %v", err)
+	}
+
+	// Create a TLS configuration with the certificate
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+	}
+
+	// Wrap the listener with TLS
+	acmeHTTPListener = tls.NewListener(acmeHTTPListener, tlsConfig)
+
+	go func() {
+		http.Serve(acmeHTTPListener, muxHandler)
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cas := x509.NewCertPool()
+	cas.AppendCertsFromPEM(certPEM)
+
+	acmeEndpoint := fmt.Sprintf("https://%s%s", acmeHTTPListener.Addr(), pebbleWFE.DirectoryPath)
+	certLoaded := make(chan bool, 1)
+	h, err := client.NewHostWithP2PForge(forge, fmt.Sprintf("http://127.0.0.1:%d", httpPort), acmeEndpoint, "foo@bar.com", cas, func() {
+		certLoaded <- true
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cp := x509.NewCertPool()
+	cp.AddCert(ca.GetRootCert(0).Cert)
+	tlsCfgWithTestCA := &tls.Config{RootCAs: cp}
+
+	localDnsResolver, err := madns.NewResolver(madns.WithDefaultResolver(&net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{
+				Timeout: time.Second * 5, // Set a timeout for the connection
+			}
+			return d.DialContext(ctx, network, dnsServerAddress)
+		},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	customResolver, err := madns.NewResolver(madns.WithDomainResolver("libp2p.direct.", localDnsResolver))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h2, err := libp2p.New(libp2p.Transport(libp2pws.New, libp2pws.WithTLSClientConfig(tlsCfgWithTestCA)),
+		libp2p.MultiaddrResolver(customResolver))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var dialAddr multiaddr.Multiaddr
+	hAddrs := h.Addrs()
+	for _, addr := range hAddrs {
+		as := addr.String()
+		if strings.Contains(as, "p2p-circuit") {
+			continue
+		}
+		if strings.Contains(as, "libp2p.direct/ws") {
+			dialAddr = addr
+			break
+		}
+	}
+	if dialAddr == nil {
+		t.Fatalf("no valid wss addresses: %v", hAddrs)
+	}
+
+	select {
+	case <-certLoaded:
+	case <-time.After(time.Second * 30):
+		t.Fatal("timed out waiting for certificate")
+	}
+
+	if err := h2.Connect(ctx, peer.AddrInfo{ID: h.ID(), Addrs: []multiaddr.Multiaddr{dialAddr}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func generateSelfSignedCert(ipAddr string) ([]byte, []byte, error) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	template := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			Organization: []string{"My Organization"},
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour), // Valid for 1 year
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IPAddresses:           []net.IP{net.ParseIP(ipAddr)},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	privDER, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return nil, nil, err
+	}
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privDER})
+
+	return certPEM, privPEM, nil
 }
 
 // Input implements the caddy.Input interface and acts as an easy way to use a string as a Corefile.
