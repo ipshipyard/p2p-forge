@@ -206,6 +206,7 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string) error {
 	if err != nil {
 		return err
 	}
+	defer h.Close()
 
 	var mas []multiaddr.Multiaddr
 	for _, addr := range addrs {
