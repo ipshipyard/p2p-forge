@@ -49,7 +49,7 @@ func (h hostCloseWrapper) Close() error {
 }
 
 func NewHostWithP2PForge(forgeDomain string, forgeRegistrationEndpoint string, caEndpoint string, userEmail string, trustedRoots *x509.CertPool, onCertLoaded func(), allowPrivateForgeAddrs bool, opts ...libp2p.Option) (host.Host, error) {
-	certMgr := NewP2PForgeCertMgt(forgeDomain, forgeRegistrationEndpoint, caEndpoint, userEmail, trustedRoots)
+	certMgr := NewP2PForgeCertMgr(forgeDomain, forgeRegistrationEndpoint, caEndpoint, userEmail, trustedRoots)
 	tlsCfg := certMgr.cfg.TLSConfig()
 	tlsCfg.NextProtos = []string{"h2", "http/1.1"} // remove the ACME ALPN and set the HTTP 1.1 and 2 ALPNs
 
@@ -235,7 +235,7 @@ func inAddrRange(ip net.IP, ipnets []*net.IPNet) bool {
 	return false
 }
 
-func NewP2PForgeCertMgt(forgeDomain string, forgeRegistrationEndpoint string, caEndpoint string, userEmail string, trustedRoots *x509.CertPool) *P2PForgeCertMgr {
+func NewP2PForgeCertMgr(forgeDomain string, forgeRegistrationEndpoint string, caEndpoint string, userEmail string, trustedRoots *x509.CertPool) *P2PForgeCertMgr {
 	cfg := certmagic.NewDefault()
 	cfg.Storage = &certmagic.FileStorage{Path: "foo"}
 	h := &hostWrapper{}
