@@ -2,7 +2,7 @@ package ipparser
 
 import (
 	"context"
-	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -75,8 +75,8 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		segments := strings.Split(prefix, "-")
 		if len(segments) == 4 && (q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY) {
 			ipStr := strings.Join(segments, ".")
-			ip := net.ParseIP(ipStr)
-			if ip == nil {
+			ip, err := netip.ParseAddr(ipStr)
+			if err != nil {
 				continue
 			}
 			answers = append(answers, &dns.A{
@@ -86,7 +86,7 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 					Class:  dns.ClassINET,
 					Ttl:    uint32(ttl.Seconds()),
 				},
-				A: ip,
+				A: ip.AsSlice(),
 			})
 			continue
 		}
@@ -101,8 +101,8 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		}
 
 		prefixAsIpv6 := strings.Join(segments, ":")
-		ip := net.ParseIP(prefixAsIpv6)
-		if ip == nil {
+		ip, err := netip.ParseAddr(prefixAsIpv6)
+		if err != nil {
 			continue
 		}
 
@@ -113,7 +113,7 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				Class:  dns.ClassINET,
 				Ttl:    uint32(ttl.Seconds()),
 			},
-			AAAA: ip,
+			AAAA: ip.AsSlice(),
 		})
 	}
 
