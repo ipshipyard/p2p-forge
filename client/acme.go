@@ -48,17 +48,66 @@ func (h hostCloseWrapper) Close() error {
 	return h.closeFn()
 }
 
-func NewHostWithP2PForge(forgeDomain string, forgeRegistrationEndpoint string, caEndpoint string, userEmail string, trustedRoots *x509.CertPool, onCertLoaded func(), allowPrivateForgeAddrs bool, opts ...libp2p.Option) (host.Host, error) {
-	certMgr := NewP2PForgeCertMgr(forgeDomain, forgeRegistrationEndpoint, caEndpoint, userEmail, trustedRoots)
+type P2PForgeHostConfig struct {
+	certMgrOpts            []P2PForgeCertMgrOptions
+	onCertLoaded           func()
+	allowPrivateForgeAddrs bool
+	libp2pOpts             []libp2p.Option
+}
+
+type P2PForgeHostOptions func(*P2PForgeHostConfig) error
+
+func WithP2PForgeCertMgrOptions(opts ...P2PForgeCertMgrOptions) P2PForgeHostOptions {
+	return func(h *P2PForgeHostConfig) error {
+		h.certMgrOpts = append(h.certMgrOpts, opts...)
+		return nil
+	}
+}
+
+func WithLibp2pOptions(opts ...libp2p.Option) P2PForgeHostOptions {
+	return func(h *P2PForgeHostConfig) error {
+		h.libp2pOpts = append(h.libp2pOpts, opts...)
+		return nil
+	}
+}
+
+func WithOnCertLoaded(fn func()) P2PForgeHostOptions {
+	return func(h *P2PForgeHostConfig) error {
+		h.onCertLoaded = fn
+		return nil
+	}
+}
+
+// WithAllowPrivateForgeAddrs is meant for testing
+func WithAllowPrivateForgeAddrs() P2PForgeHostOptions {
+	return func(h *P2PForgeHostConfig) error {
+		h.allowPrivateForgeAddrs = true
+		return nil
+	}
+}
+
+func NewHostWithP2PForge(opts ...P2PForgeHostOptions) (host.Host, error) {
+	cfg := &P2PForgeHostConfig{}
+	for _, opt := range opts {
+		if err := opt(cfg); err != nil {
+			return nil, err
+		}
+	}
+
+	certMgr, err := NewP2PForgeCertMgr(cfg.certMgrOpts...)
+	if err != nil {
+		return nil, err
+	}
 	tlsCfg := certMgr.cfg.TLSConfig()
 	tlsCfg.NextProtos = []string{"h2", "http/1.1"} // remove the ACME ALPN and set the HTTP 1.1 and 2 ALPNs
+	forgeDomain := certMgr.forgeDomain
 
 	var p2pForgeWssComponent = multiaddr.StringCast(fmt.Sprintf("/tls/sni/*.%s/ws", forgeDomain))
 
 	var h host.Host
 	var mx sync.RWMutex
 	// TODO: Option passing mechanism here isn't respectful of which transports the user wants to support or the addresses they want to listen on
-	hTmp, err := libp2p.New(libp2p.ChainOptions(libp2p.ChainOptions(opts...),
+	hTmp, err := libp2p.New(libp2p.ChainOptions(libp2p.ChainOptions(cfg.libp2pOpts...),
 		libp2p.DefaultListenAddrs,
 		libp2p.ListenAddrStrings([]string{ // TODO: Grab these addresses from a TCP listener and share the ports
 			fmt.Sprintf("/ip4/0.0.0.0/tcp/0/tls/sni/*.%s/ws", forgeDomain),
@@ -79,7 +128,7 @@ func NewHostWithP2PForge(forgeDomain string, forgeRegistrationEndpoint string, c
 
 			retAddrs := make([]multiaddr.Multiaddr, len(multiaddrs))
 			for i, a := range multiaddrs {
-				if isRelayAddr(a) || (!allowPrivateForgeAddrs && isPublicAddr(a)) {
+				if isRelayAddr(a) || (!cfg.allowPrivateForgeAddrs && isPublicAddr(a)) {
 					retAddrs[i] = a
 					continue
 				}
@@ -167,7 +216,7 @@ func NewHostWithP2PForge(forgeDomain string, forgeRegistrationEndpoint string, c
 		return err
 	}}
 
-	if onCertLoaded != nil {
+	if cfg.onCertLoaded != nil {
 		pidStr := peer.ToCid(h.ID()).Encode(multibase.MustNewEncoder(multibase.Base36))
 		certName := fmt.Sprintf("*.%s.%s", pidStr, forgeDomain)
 		_ = certName
@@ -183,7 +232,7 @@ func NewHostWithP2PForge(forgeDomain string, forgeRegistrationEndpoint string, c
 				}
 				for _, san := range sanList {
 					if san == certName {
-						onCertLoaded()
+						cfg.onCertLoaded()
 					}
 				}
 				return nil
@@ -235,19 +284,106 @@ func inAddrRange(ip net.IP, ipnets []*net.IPNet) bool {
 	return false
 }
 
-func NewP2PForgeCertMgr(forgeDomain string, forgeRegistrationEndpoint string, caEndpoint string, userEmail string, trustedRoots *x509.CertPool) *P2PForgeCertMgr {
-	cfg := certmagic.NewDefault()
-	cfg.Storage = &certmagic.FileStorage{Path: "foo"}
+type P2PForgeCertMgrConfig struct {
+	forgeDomain               string
+	forgeRegistrationEndpoint string
+	caEndpoint                string
+	userEmail                 string
+	trustedRoots              *x509.CertPool
+	storage                   certmagic.Storage
+}
+
+type P2PForgeCertMgrOptions func(*P2PForgeCertMgrConfig) error
+
+func WithForgeDomain(domain string) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.forgeDomain = domain
+		return nil
+	}
+}
+
+func WithForgeRegistrationEndpoint(endpoint string) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.forgeRegistrationEndpoint = endpoint
+		return nil
+	}
+}
+
+func WithCAEndpoint(caEndpoint string) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.caEndpoint = caEndpoint
+		return nil
+	}
+}
+
+func WithCertificateStorage(storage certmagic.Storage) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.storage = storage
+		return nil
+	}
+}
+
+func WithUserEmail(email string) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.userEmail = email
+		return nil
+	}
+}
+
+// WithTrustedRoots is meant for testing
+func WithTrustedRoots(trustedRoots *x509.CertPool) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.trustedRoots = trustedRoots
+		return nil
+	}
+}
+
+// NewP2PForgeCertMgr handles the creation and management of certificates that are automatically granted by a forge
+// to a libp2p host.
+//
+// Calling this function signifies your acceptance to
+// the CA's Subscriber Agreement and/or Terms of Service. Let's Encrypt is the default CA.
+func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error) {
+	mgrCfg := &P2PForgeCertMgrConfig{}
+	for _, opt := range opts {
+		if err := opt(mgrCfg); err != nil {
+			return nil, err
+		}
+	}
+
+	const libp2pDirectName = "libp2p.direct"
+	const libp2pDirectRegistrationEndpoint = "https://registration.libp2p.direct"
+	if mgrCfg.forgeDomain == "" {
+		mgrCfg.forgeDomain = "libp2p.direct"
+	}
+	if mgrCfg.caEndpoint == "" {
+		mgrCfg.caEndpoint = certmagic.LetsEncryptProductionCA
+	}
+	if mgrCfg.forgeRegistrationEndpoint == "" {
+		if mgrCfg.forgeDomain == libp2pDirectName {
+			mgrCfg.forgeRegistrationEndpoint = libp2pDirectRegistrationEndpoint
+		} else {
+			return nil, fmt.Errorf("must specify the forge registration endpoint if using a non-default forge")
+		}
+	}
+	const defaultStorageLocation = "p2p-forge-certs"
+	if mgrCfg.storage == nil {
+		mgrCfg.storage = &certmagic.FileStorage{Path: defaultStorageLocation}
+	}
+
+	certCfg := certmagic.NewDefault()
+	certCfg.Storage = mgrCfg.storage
 	h := &hostWrapper{}
-	myACME := certmagic.NewACMEIssuer(cfg, certmagic.ACMEIssuer{ // TODO: UX around user passed emails + agreement
-		CA:           caEndpoint, // TODO: Switch to real CA by default
-		Email:        userEmail,
+
+	myACME := certmagic.NewACMEIssuer(certCfg, certmagic.ACMEIssuer{ // TODO: UX around user passed emails + agreement
+		CA:           mgrCfg.caEndpoint,
+		Email:        mgrCfg.userEmail,
 		Agreed:       true,
-		DNS01Solver:  &dns01P2PForgeSolver{forgeRegistrationEndpoint, h},
-		TrustedRoots: trustedRoots,
+		DNS01Solver:  &dns01P2PForgeSolver{mgrCfg.forgeRegistrationEndpoint, h},
+		TrustedRoots: mgrCfg.trustedRoots,
 	})
-	cfg.Issuers = []certmagic.Issuer{myACME}
-	return &P2PForgeCertMgr{forgeDomain, forgeRegistrationEndpoint, cfg, h}
+	certCfg.Issuers = []certmagic.Issuer{myACME}
+	return &P2PForgeCertMgr{mgrCfg.forgeDomain, mgrCfg.forgeRegistrationEndpoint, certCfg, h}, nil
 }
 
 func (m *P2PForgeCertMgr) Run(ctx context.Context, h host.Host) error {

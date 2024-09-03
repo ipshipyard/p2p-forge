@@ -398,9 +398,12 @@ func TestLibp2pACMEE2E(t *testing.T) {
 
 	acmeEndpoint := fmt.Sprintf("https://%s%s", acmeHTTPListener.Addr(), pebbleWFE.DirectoryPath)
 	certLoaded := make(chan bool, 1)
-	h, err := client.NewHostWithP2PForge(forge, fmt.Sprintf("http://127.0.0.1:%d", httpPort), acmeEndpoint, "foo@bar.com", cas, func() {
-		certLoaded <- true
-	}, true)
+	h, err := client.NewHostWithP2PForge(
+		client.WithP2PForgeCertMgrOptions(client.WithForgeDomain(forge), client.WithForgeRegistrationEndpoint(fmt.Sprintf("http://127.0.0.1:%d", httpPort)), client.WithCAEndpoint(acmeEndpoint), client.WithTrustedRoots(cas)),
+		client.WithOnCertLoaded(func() {
+			certLoaded <- true
+		}),
+		client.WithAllowPrivateForgeAddrs())
 	if err != nil {
 		t.Fatal(err)
 	}
