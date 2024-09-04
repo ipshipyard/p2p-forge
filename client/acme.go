@@ -408,7 +408,7 @@ func (d *dns01P2PForgeSolver) Wait(ctx context.Context, challenge acme.Challenge
 }
 
 func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challenge) error {
-	return SendChallenge(ctx, d.forge, d.host.ID(), d.host.Peerstore().PrivKey(d.host.ID()), challenge.DNS01KeyAuthorization(), d.host.Addrs())
+	return SendChallenge(ctx, d.forge, d.host.Peerstore().PrivKey(d.host.ID()), challenge.DNS01KeyAuthorization(), d.host.Addrs())
 }
 
 func (d *dns01P2PForgeSolver) CleanUp(ctx context.Context, challenge acme.Challenge) error {

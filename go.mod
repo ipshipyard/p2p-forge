@@ -13,15 +13,12 @@ require (
 	github.com/ipfs/go-ds-dynamodb v0.1.1
 	github.com/ipfs/go-log/v2 v2.5.1
 	github.com/letsencrypt/pebble/v2 v2.6.0
-	github.com/libp2p/go-buffer-pool v0.1.0
-	github.com/libp2p/go-libp2p v0.36.3-0.20240830152458-d55bed5f78fa
+	github.com/libp2p/go-libp2p v0.36.3-0.20240903225031-fbcede220897
 	github.com/mholt/acmez/v2 v2.0.1
 	github.com/miekg/dns v1.1.61
 	github.com/multiformats/go-multiaddr v0.13.0
 	github.com/multiformats/go-multiaddr-dns v0.3.1
 	github.com/multiformats/go-multibase v0.2.0
-	github.com/multiformats/go-varint v0.0.7
-	google.golang.org/protobuf v1.34.2
 )
 
 require (
@@ -113,6 +110,7 @@ require (
 	github.com/koron/go-ssdp v0.0.4 // indirect
 	github.com/letsencrypt/challtestsrv v1.3.2 // indirect
 	github.com/libdns/libdns v0.2.2 // indirect
+	github.com/libp2p/go-buffer-pool v0.1.0 // indirect
 	github.com/libp2p/go-flow-metrics v0.1.0 // indirect
 	github.com/libp2p/go-libp2p-asn-util v0.4.1 // indirect
 	github.com/libp2p/go-msgio v0.3.0 // indirect
@@ -137,6 +135,7 @@ require (
 	github.com/multiformats/go-multicodec v0.9.0 // indirect
 	github.com/multiformats/go-multihash v0.2.3 // indirect
 	github.com/multiformats/go-multistream v0.5.0 // indirect
+	github.com/multiformats/go-varint v0.0.7 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/onsi/ginkgo/v2 v2.19.1 // indirect
 	github.com/opencontainers/runtime-spec v1.2.0 // indirect
@@ -212,6 +211,7 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20240311132316-a219d84964c2 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240318140521-94a12d6c2237 // indirect
 	google.golang.org/grpc v1.63.2 // indirect
+	google.golang.org/protobuf v1.34.2 // indirect
 	gopkg.in/DataDog/dd-trace-go.v1 v1.62.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect

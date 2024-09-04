@@ -58,7 +58,7 @@ To claim a domain name like `<peerID>.libp2p.direct` requires:
 To set an ACME challenge send an HTTP request to the server (for libp2p.direct this is registration.libp2p.direct)
 ```shell
 curl -X POST "https://registration.libp2p.direct/v1/<peerID>/_acme-challenge" \
--H "Authorization: Bearer <signature>.<public_key>"
+-H "Authorization: libp2p-PeerID bearer=\"<base64-encoded-opaque-blob>\""
 -H "Content-Type: application/json" \
 -d '{
   "value": "your_acme_challenge_token",
@@ -66,15 +66,4 @@ curl -X POST "https://registration.libp2p.direct/v1/<peerID>/_acme-challenge" \
 }'
 ```
 
-Where the signature is a base64 encoding of the signature for a [libp2p signed envelope](https://github.com/libp2p/specs/blob/master/RFC/0002-signed-envelopes.md)
-where:
-- The domain separation string is "peer-forge-domain-challenge"
-- The payload type is the ASCII string "/peer-forge-domain-challenge"
-- The payload bytes are the contents of the body of the request
-
-If the public key is not extractable from the peerID then after the signature add a `.` followed by the base64 encoded
-public key in the libp2p public key format.
-
-Note: Per the [peerID spec](https://github.com/libp2p/specs/blob/master/peer-ids/peer-ids.md#peer-ids) the peerIDs with
-extractable public keys are those that are encoded as fewer than 42 bytes (i.e. Ed25519 and Secp256k1), which means the
-others (i.e. RSA and ECDSA) require the public keys to be in the Authorization header.
+Where the bearer token is derived via the [libp2p HTTP PeerID Auth Specification](https://github.com/libp2p/specs/pull/564).

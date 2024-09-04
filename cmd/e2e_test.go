@@ -123,7 +123,7 @@ func TestSetACMEChallenge(t *testing.T) {
 	testDigest := sha256.Sum256([]byte("test"))
 	testChallenge := base64.RawURLEncoding.EncodeToString(testDigest[:])
 
-	if err := client.SendChallenge(ctx, fmt.Sprintf("http://127.0.0.1:%d", httpPort), h.ID(), sk, testChallenge, h.Addrs()); err != nil {
+	if err := client.SendChallenge(ctx, fmt.Sprintf("http://127.0.0.1:%d", httpPort), sk, testChallenge, h.Addrs()); err != nil {
 		t.Fatal(err)
 	}
 
