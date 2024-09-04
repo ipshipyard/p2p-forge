@@ -13,9 +13,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	libp2pws "github.com/libp2p/go-libp2p/p2p/transport/websocket"
-	"github.com/multiformats/go-multiaddr"
-	madns "github.com/multiformats/go-multiaddr-dns"
 	"log"
 	"math/big"
 	"net"
@@ -31,7 +28,10 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	libp2pws "github.com/libp2p/go-libp2p/p2p/transport/websocket"
 	"github.com/miekg/dns"
+	"github.com/multiformats/go-multiaddr"
+	madns "github.com/multiformats/go-multiaddr-dns"
 	"github.com/multiformats/go-multibase"
 
 	_ "github.com/coredns/coredns/core/plugin" // Load all managed plugins in github.com/coredns/coredns.
