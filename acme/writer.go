@@ -4,16 +4,20 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/coredns/coredns/plugin/pkg/reuseport"
+
+	"github.com/caddyserver/certmagic"
 
 	"github.com/gorilla/mux"
 
@@ -29,25 +33,45 @@ var log = clog.NewWithPlugin(pluginName)
 
 // acmeWriter implements writing of ACME Challenge DNS records by exporting an HTTP endpoint.
 type acmeWriter struct {
-	Addr string
+	Addr   string
+	Domain string
 
 	Datastore datastore.TTLDatastore
 
-	ln      net.Listener
-	nlSetup bool
-	mux     *mux.Router
+	ln           net.Listener
+	nlSetup      bool
+	closeCertMgr func()
+	mux          *mux.Router
 }
 
 func (c *acmeWriter) OnStartup() error {
-	if c.Addr == "" {
-		c.Addr = ":8080"
-	}
-
-	var err error
+	domainName := c.Domain
 
 	ln, err := reuseport.Listen("tcp", c.Addr)
 	if err != nil {
 		return err
+	}
+
+	if domainName != "localhost" {
+		certCfg := certmagic.NewDefault()
+		certCfg.Storage = &certmagic.FileStorage{Path: fmt.Sprintf("%s-certs", strings.Replace(domainName, ".", "_", -1))}
+		myACME := certmagic.NewACMEIssuer(certCfg, certmagic.ACMEIssuer{
+			CA:     certmagic.LetsEncryptProductionCA, // TODO: Add a way to set the email and/or CA
+			Agreed: true,
+		})
+		certCfg.Issuers = []certmagic.Issuer{myACME}
+
+		tlsConfig := certCfg.TLSConfig()
+		tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		if err := certCfg.ManageAsync(ctx, []string{domainName}); err != nil {
+			cancel()
+			return err
+		}
+		c.closeCertMgr = cancel
+
+		ln = tls.NewListener(ln, tlsConfig)
 	}
 
 	c.ln = ln
@@ -61,12 +85,8 @@ func (c *acmeWriter) OnStartup() error {
 		return err
 	}
 	authPeer := &httppeeridauth.ServerPeerIDAuth{
-		PrivKey:       sk,
-		TokenTTL:      time.Hour,
-		InsecureNoTLS: true, // TODO: figure out how we want to handle TLS termination for this service
-		ValidHostnameFn: func(s string) bool {
-			return true
-		},
+		PrivKey:  sk,
+		TokenTTL: time.Hour,
 		Next: func(peerID peer.ID, w http.ResponseWriter, r *http.Request) {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
@@ -114,6 +134,13 @@ func (c *acmeWriter) OnStartup() error {
 			}
 			w.WriteHeader(http.StatusOK)
 		},
+	}
+
+	if domainName == "localhost" {
+		authPeer.InsecureNoTLS = true
+		authPeer.ValidHostnameFn = func(s string) bool { // TODO: should enable separate checking of host headers even with no TLS termination
+			return true
+		}
 	}
 
 	c.mux.Handle("/v1/_acme-challenge", authPeer).Methods("POST")
@@ -167,6 +194,9 @@ func (c *acmeWriter) OnFinalShutdown() error {
 	}
 
 	c.ln.Close()
+	if c.closeCertMgr != nil {
+		c.closeCertMgr()
+	}
 	c.nlSetup = false
 	return nil
 }
@@ -177,6 +207,9 @@ func (c *acmeWriter) OnReload() error {
 	}
 
 	c.ln.Close()
+	if c.closeCertMgr != nil {
+		c.closeCertMgr()
+	}
 	c.nlSetup = false
 	return nil
 }

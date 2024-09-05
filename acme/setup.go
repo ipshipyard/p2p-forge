@@ -6,7 +6,6 @@ import (
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
 	"github.com/ipfs/go-datastore"
-
 	badger4 "github.com/ipfs/go-ds-badger4"
 
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -52,7 +51,8 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 
 	forgeDomain = args[0]
 	httpListenAddr = args[1]
-	databaseType = args[2]
+	httpDomain := args[2]
+	databaseType = args[3]
 
 	var ds datastore.TTLDatastore
 
@@ -61,10 +61,10 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 		ddbClient := ddbv1.New(session.Must(session.NewSession()))
 		ds = ddbds.New(ddbClient, "foo")
 	case "badger":
-		if len(args) != 4 {
+		if len(args) != 5 {
 			return nil, nil, fmt.Errorf("need to pass a path for the Badger configuration")
 		}
-		dbPath := args[3]
+		dbPath := args[4]
 		var err error
 		ds, err = badger4.NewDatastore(dbPath, nil)
 		if err != nil {
@@ -76,6 +76,7 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 
 	writer := &acmeWriter{
 		Addr:      httpListenAddr,
+		Domain:    httpDomain,
 		Datastore: ds,
 	}
 	reader := &acmeReader{

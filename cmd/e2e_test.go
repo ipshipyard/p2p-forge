@@ -81,7 +81,7 @@ func TestMain(m *testing.M) {
 	corefile := fmt.Sprintf(`.:0 {
 		log
 		ipparser %s
-		acme %s :%d badger %s
+		acme %s :%d localhost badger %s
 	}`, forge, forge, httpPort, tmpDir)
 
 	instance, err := caddy.Start(NewInput(corefile))
