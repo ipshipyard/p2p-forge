@@ -85,6 +85,7 @@ func (c *acmeWriter) OnStartup() error {
 			}
 
 			// Value must be a base64url encoding of a SHA256 digest per https://datatracker.ietf.org/doc/html/rfc8555/#section-8.4
+			// It MUST NOT contain any characters outside the base64url alphabet, including padding characters ("=").
 			decodedValue, err := base64.RawURLEncoding.DecodeString(typedBody.Value)
 			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
