@@ -48,12 +48,13 @@ Other address formats (e.g. the dual IPv6/IPv4 format) are not supported
 
 To claim a domain name like `<peerID>.libp2p.direct` requires:
 1. The private key corresponding to the given peerID
-2. A publicly reachable libp2p endpoint with one of the following libp2p transport configurations:
-   - QUIC-v1
-   - TCP or WS or WSS, Yamux, TLS or Noise
-   - WebTransport
-   - Note: The [Identify protocol](https://github.com/libp2p/specs/tree/master/identify) (`/ipfs/id/1.0.0`)
-   - Other transports are under consideration (e.g. HTTP), if they are of interest please file an issue
+2. A publicly reachable libp2p endpoint with 
+   - one of the following libp2p transport configurations:
+     - QUIC-v1
+     - TCP or WS or WSS, Yamux, TLS or Noise
+     - WebTransport
+     - Other transports are under consideration (e.g. HTTP), if they are of interest please file an issue
+   - the [Identify protocol](https://github.com/libp2p/specs/tree/master/identify) (`/ipfs/id/1.0.0`)
 
 To set an ACME challenge send an HTTP request to the server (for libp2p.direct this is registration.libp2p.direct)
 ```shell
