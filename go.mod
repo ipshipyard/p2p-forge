@@ -13,7 +13,7 @@ require (
 	github.com/ipfs/go-ds-dynamodb v0.1.1
 	github.com/ipfs/go-log/v2 v2.5.1
 	github.com/letsencrypt/pebble/v2 v2.6.0
-	github.com/libp2p/go-libp2p v0.36.3-0.20240903225031-fbcede220897
+	github.com/libp2p/go-libp2p v0.36.3-0.20240909195832-fbc0ac8f743c
 	github.com/mholt/acmez/v2 v2.0.1
 	github.com/miekg/dns v1.1.61
 	github.com/multiformats/go-multiaddr v0.13.0

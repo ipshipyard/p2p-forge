@@ -5,9 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	httppeeridauth "github.com/libp2p/go-libp2p/p2p/http/auth"
 	"io"
 	"net/http"
+
+	httppeeridauth "github.com/libp2p/go-libp2p/p2p/http/auth"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/multiformats/go-multiaddr"
@@ -39,9 +40,7 @@ func SendChallenge(ctx context.Context, baseURL string, privKey crypto.PrivKey, 
 	}
 
 	client := &httppeeridauth.ClientPeerIDAuth{PrivKey: privKey}
-	_, resp, err := client.AuthenticatedDo(http.DefaultClient, func() *http.Request {
-		return req
-	})
+	_, resp, err := client.AuthenticatedDo(http.DefaultClient, req)
 	if err != nil {
 		return err
 	}

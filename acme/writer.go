@@ -137,7 +137,7 @@ func (c *acmeWriter) OnStartup() error {
 	}
 
 	if domainName == "localhost" {
-		authPeer.InsecureNoTLS = true
+		authPeer.NoTLS = true
 		authPeer.ValidHostnameFn = func(s string) bool { // TODO: should enable separate checking of host headers even with no TLS termination
 			return true
 		}
