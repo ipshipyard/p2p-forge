@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/x509"
 	"fmt"
+	httppeeridauth "github.com/libp2p/go-libp2p/p2p/http/auth"
+	"io"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -291,6 +294,7 @@ type P2PForgeCertMgrConfig struct {
 	userEmail                 string
 	trustedRoots              *x509.CertPool
 	storage                   certmagic.Storage
+	modifyForgeRequest        func(r *http.Request) error
 }
 
 type P2PForgeCertMgrOptions func(*P2PForgeCertMgrConfig) error
@@ -326,6 +330,15 @@ func WithCertificateStorage(storage certmagic.Storage) P2PForgeCertMgrOptions {
 func WithUserEmail(email string) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
 		config.userEmail = email
+		return nil
+	}
+}
+
+// WithModifiedForgeRequest enables modifying how the ACME DNS challenges are sent to the forge, such as to enable
+// custom HTTP headers, etc.
+func WithModifiedForgeRequest(fn func(req *http.Request) error) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.modifyForgeRequest = fn
 		return nil
 	}
 }
@@ -366,6 +379,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 			return nil, fmt.Errorf("must specify the forge registration endpoint if using a non-default forge")
 		}
 	}
+
 	const defaultStorageLocation = "p2p-forge-certs"
 	if mgrCfg.storage == nil {
 		mgrCfg.storage = &certmagic.FileStorage{Path: defaultStorageLocation}
@@ -379,7 +393,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		CA:           mgrCfg.caEndpoint,
 		Email:        mgrCfg.userEmail,
 		Agreed:       true,
-		DNS01Solver:  &dns01P2PForgeSolver{mgrCfg.forgeRegistrationEndpoint, h},
+		DNS01Solver:  &dns01P2PForgeSolver{mgrCfg.forgeRegistrationEndpoint, h, mgrCfg.modifyForgeRequest},
 		TrustedRoots: mgrCfg.trustedRoots,
 	})
 	certCfg.Issuers = []certmagic.Issuer{myACME}
@@ -397,8 +411,9 @@ func (m *P2PForgeCertMgr) Run(ctx context.Context, h host.Host) error {
 }
 
 type dns01P2PForgeSolver struct {
-	forge string
-	host  host.Host
+	forge              string
+	host               host.Host
+	modifyForgeRequest func(r *http.Request) error
 }
 
 func (d *dns01P2PForgeSolver) Wait(ctx context.Context, challenge acme.Challenge) error {
@@ -408,7 +423,26 @@ func (d *dns01P2PForgeSolver) Wait(ctx context.Context, challenge acme.Challenge
 }
 
 func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challenge) error {
-	return SendChallenge(ctx, d.forge, d.host.Peerstore().PrivKey(d.host.ID()), challenge.DNS01KeyAuthorization(), d.host.Addrs())
+	req, err := ChallengeRequest(ctx, d.forge, challenge.DNS01KeyAuthorization(), d.host.Addrs())
+	if err != nil {
+		return err
+	}
+	if d.modifyForgeRequest != nil {
+		if err := d.modifyForgeRequest(req); err != nil {
+			return err
+		}
+	}
+
+	client := &httppeeridauth.ClientPeerIDAuth{PrivKey: d.host.Peerstore().PrivKey(d.host.ID())}
+	_, resp, err := client.AuthenticatedDo(http.DefaultClient, req)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%s : %s", resp.Status, respBody)
+	}
+	return nil
 }
 
 func (d *dns01P2PForgeSolver) CleanUp(ctx context.Context, challenge acme.Challenge) error {

@@ -33,8 +33,9 @@ var log = clog.NewWithPlugin(pluginName)
 
 // acmeWriter implements writing of ACME Challenge DNS records by exporting an HTTP endpoint.
 type acmeWriter struct {
-	Addr   string
-	Domain string
+	Addr        string
+	Domain      string
+	ExternalTLS bool
 
 	Datastore datastore.TTLDatastore
 
@@ -45,16 +46,14 @@ type acmeWriter struct {
 }
 
 func (c *acmeWriter) OnStartup() error {
-	domainName := c.Domain
-
 	ln, err := reuseport.Listen("tcp", c.Addr)
 	if err != nil {
 		return err
 	}
 
-	if domainName != "localhost" {
+	if !c.ExternalTLS {
 		certCfg := certmagic.NewDefault()
-		certCfg.Storage = &certmagic.FileStorage{Path: fmt.Sprintf("%s-certs", strings.Replace(domainName, ".", "_", -1))}
+		certCfg.Storage = &certmagic.FileStorage{Path: fmt.Sprintf("%s-certs", strings.Replace(c.Domain, ".", "_", -1))}
 		myACME := certmagic.NewACMEIssuer(certCfg, certmagic.ACMEIssuer{
 			CA:     certmagic.LetsEncryptProductionCA, // TODO: Add a way to set the email and/or CA
 			Agreed: true,
@@ -65,7 +64,7 @@ func (c *acmeWriter) OnStartup() error {
 		tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		if err := certCfg.ManageAsync(ctx, []string{domainName}); err != nil {
+		if err := certCfg.ManageAsync(ctx, []string{c.Domain}); err != nil {
 			cancel()
 			return err
 		}
@@ -136,10 +135,10 @@ func (c *acmeWriter) OnStartup() error {
 		},
 	}
 
-	if domainName == "localhost" {
+	if c.ExternalTLS {
 		authPeer.NoTLS = true
-		authPeer.ValidHostnameFn = func(s string) bool { // TODO: should enable separate checking of host headers even with no TLS termination
-			return true
+		authPeer.ValidHostnameFn = func(s string) bool {
+			return s == c.Domain
 		}
 	}
 

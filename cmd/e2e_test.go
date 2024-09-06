@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math/big"
 	"net"
@@ -28,6 +29,7 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	httppeeridauth "github.com/libp2p/go-libp2p/p2p/http/auth"
 	libp2pws "github.com/libp2p/go-libp2p/p2p/transport/websocket"
 	"github.com/miekg/dns"
 	"github.com/multiformats/go-multiaddr"
@@ -45,6 +47,7 @@ import (
 )
 
 const forge = "libp2p.direct"
+const forgeRegistration = "registration.libp2p.direct"
 
 var dnsServerAddress string
 var httpPort int
@@ -81,8 +84,11 @@ func TestMain(m *testing.M) {
 	corefile := fmt.Sprintf(`.:0 {
 		log
 		ipparser %s
-		acme %s :%d localhost badger %s
-	}`, forge, forge, httpPort, tmpDir)
+		acme %s {
+			registration-domain %s listen-address=:%d external-tls=true
+			database-type badger %s
+        }
+	}`, forge, forge, forgeRegistration, httpPort, tmpDir)
 
 	instance, err := caddy.Start(NewInput(corefile))
 	if err != nil {
@@ -123,8 +129,20 @@ func TestSetACMEChallenge(t *testing.T) {
 	testDigest := sha256.Sum256([]byte("test"))
 	testChallenge := base64.RawURLEncoding.EncodeToString(testDigest[:])
 
-	if err := client.SendChallenge(ctx, fmt.Sprintf("http://127.0.0.1:%d", httpPort), sk, testChallenge, h.Addrs()); err != nil {
+	req, err := client.ChallengeRequest(ctx, fmt.Sprintf("http://127.0.0.1:%d", httpPort), testChallenge, h.Addrs())
+	if err != nil {
 		t.Fatal(err)
+	}
+	req.Host = forgeRegistration
+
+	peerHTTPClient := &httppeeridauth.ClientPeerIDAuth{PrivKey: sk}
+	_, resp, err := peerHTTPClient.AuthenticatedDo(http.DefaultClient, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatal(fmt.Errorf("%s : %s", resp.Status, respBody))
 	}
 
 	peerIDb36, err := peer.ToCid(h.ID()).StringOfBase(multibase.Base36)
@@ -399,7 +417,11 @@ func TestLibp2pACMEE2E(t *testing.T) {
 	acmeEndpoint := fmt.Sprintf("https://%s%s", acmeHTTPListener.Addr(), pebbleWFE.DirectoryPath)
 	certLoaded := make(chan bool, 1)
 	h, err := client.NewHostWithP2PForge(
-		client.WithP2PForgeCertMgrOptions(client.WithForgeDomain(forge), client.WithForgeRegistrationEndpoint(fmt.Sprintf("http://127.0.0.1:%d", httpPort)), client.WithCAEndpoint(acmeEndpoint), client.WithTrustedRoots(cas)),
+		client.WithP2PForgeCertMgrOptions(client.WithForgeDomain(forge), client.WithForgeRegistrationEndpoint(fmt.Sprintf("http://127.0.0.1:%d", httpPort)), client.WithCAEndpoint(acmeEndpoint), client.WithTrustedRoots(cas),
+			client.WithModifiedForgeRequest(func(req *http.Request) error {
+				req.Host = forgeRegistration
+				return nil
+			})),
 		client.WithOnCertLoaded(func() {
 			certLoaded <- true
 		}),
