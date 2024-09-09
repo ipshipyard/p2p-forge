@@ -19,6 +19,59 @@ Will download using go mod, build and install the binary in your global Go binar
 
 ## Usage
 
+### Configuration
+
+This binary is based on [CoreDNS](https://github.com/coredns/coredns) which is itself based on Caddy.
+To run the binary create a file `Corefile` following the syntax listed in the CoreDNS documentation.
+
+This binary introduces two additional plugins:
+- `ipparser` which handles returning A and AAAA records for domains like `<encoded-ip-address>.<peerID>.libp2p.direct`
+- `acme` which handles reading and writing DNS acme challenges for domains like `_acme-challenge.<peerID>.libp2p.direct`
+
+#### ipparser Syntax
+
+~~~
+ipparser FORGE_DOMAIN
+~~~
+
+**FORGE_DOMAIN** the domain of the forge (e.g. libp2p.direct)
+
+#### acme Syntax
+
+~~~
+acme FORGE_DOMAIN {
+	[registration-domain REGISTRATION_DOMAIN [listen-address=ADDRESS] [external-tls=true|false]
+	[database-type DB_TYPE [...DB_ARGS]]
+}
+~~~
+
+- **FORGE_DOMAIN** the domain of the forge (e.g. libp2p.direct)
+- **REGISTRATION_DOMAIN** the domain used by clients to send requests for setting ACME challenges (e.g. registration.libp2p.direct)
+   - **ADDRESS** is the address and port for the internal HTTP server to listen on (e.g. :1234), defaults to `:443`.
+   - external-tls should be set to true if the TLS termination (and validation of the registration domain name) will happen externally or should be handled locally, defaults to false
+- **DB_TYPE** is the type of the backing database used for storing the ACME challenges. Options include:
+    - dynamo TABLE_NAME (where all credentials are set via AWS' standard environment variables)
+    - badger DB_PATH
+
+### Example
+
+Below is a basic example of starting a DNS server that handles the IP based domain names as well as ACME challenges.
+It does the following:
+- Handles IP-based names and ACME challenges for the libp2p.direct forge
+- Sets up a standard HTTPS listener for registration.libp2p.direct to handle setting ACME challenges
+- Uses dynamo as a backend for ACME challenges
+
+``` corefile
+. {
+    log
+	ipparser libp2p.direct
+    acme libp2p.direct {
+        registration-domain registration.libp2p.direct listen-address=:443 external-tls=false
+        database-type dynamo mytable
+    }
+}
+```
+
 ### Handled DNS records
 
 There are 3 types of records handled for a given peer and forge (e.g. `<peerID>.libp2p.direct`):
