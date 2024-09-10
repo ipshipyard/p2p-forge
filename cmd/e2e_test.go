@@ -447,12 +447,13 @@ func TestLibp2pACMEE2E(t *testing.T) {
 			certMgr.AddrStrings()..., // TODO reuse tcp port for ws
 		),
 		certMgr.WebSocketTransport(),
-		// Sets up any options taht the cert manager needs
+		// Sets up any options that the cert manager needs
 		certMgr.Libp2pOptions(client.WithAllowPrivateForgeAddrs()),
 	))
 	if err != nil {
 		t.Fatal(err)
 	}
+	certMgr.ProvideHost(h)
 
 	cp := x509.NewCertPool()
 	cp.AddCert(ca.GetRootCert(0).Cert)

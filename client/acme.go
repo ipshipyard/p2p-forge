@@ -12,7 +12,6 @@ import (
 	"time"
 
 	httppeeridauth "github.com/libp2p/go-libp2p/p2p/http/auth"
-	"go.uber.org/fx"
 
 	"github.com/caddyserver/certmagic"
 	logging "github.com/ipfs/go-log/v2"
@@ -35,8 +34,9 @@ type P2PForgeCertMgr struct {
 	cancel                    func()
 	forgeDomain               string
 	forgeRegistrationEndpoint string
-	provideHost               func(host.Host)
+	ProvideHost               func(host.Host)
 	hostFn                    func() host.Host
+	hasHost                   func() bool
 	cfg                       *certmagic.Config
 }
 
@@ -203,7 +203,17 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	certCfg.Storage = mgrCfg.storage
 	hostChan := make(chan host.Host, 1)
 	provideHost := func(host host.Host) { hostChan <- host }
-	hostVal := sync.OnceValue(func() host.Host {
+	hasHostChan := make(chan struct{})
+	hasHostFn := func() bool {
+		select {
+		case <-hasHostChan:
+			return true
+		default:
+			return false
+		}
+	}
+	hostFn := sync.OnceValue(func() host.Host {
+		defer close(hasHostChan)
 		return <-hostChan
 	})
 
@@ -211,7 +221,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		CA:           mgrCfg.caEndpoint,
 		Email:        mgrCfg.userEmail,
 		Agreed:       true,
-		DNS01Solver:  &dns01P2PForgeSolver{mgrCfg.forgeRegistrationEndpoint, hostVal, mgrCfg.modifyForgeRequest},
+		DNS01Solver:  &dns01P2PForgeSolver{mgrCfg.forgeRegistrationEndpoint, hostFn, mgrCfg.modifyForgeRequest},
 		TrustedRoots: mgrCfg.trustedRoots,
 	})
 	certCfg.Issuers = []certmagic.Issuer{myACME}
@@ -227,7 +237,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 				if !ok {
 					return nil
 				}
-				peerID := hostVal().ID()
+				peerID := hostFn().ID()
 				pidStr := peer.ToCid(peerID).Encode(multibase.MustNewEncoder(multibase.Base36))
 				certName := fmt.Sprintf("*.%s.%s", pidStr, mgrCfg.forgeDomain)
 				for _, san := range sanList {
@@ -244,8 +254,9 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	return &P2PForgeCertMgr{
 		forgeDomain:               mgrCfg.forgeDomain,
 		forgeRegistrationEndpoint: mgrCfg.forgeRegistrationEndpoint,
-		provideHost:               provideHost,
-		hostFn:                    hostVal,
+		ProvideHost:               provideHost,
+		hostFn:                    hostFn,
+		hasHost:                   hasHostFn,
 		cfg:                       certCfg,
 	}, nil
 }
@@ -291,20 +302,13 @@ func (m *P2PForgeCertMgr) Libp2pOptions(opts ...P2PForgeHostOptions) libp2p.Opti
 	forgeDomain := m.forgeDomain
 
 	var p2pForgeWssComponent = multiaddr.StringCast(fmt.Sprintf("/tls/sni/*.%s/ws", forgeDomain))
-	return libp2p.ChainOptions(
-		libp2p.AddrsFactory(addrFactoryFn(func() peer.ID { return m.hostFn().ID() }, forgeDomain, cfg.allowPrivateForgeAddrs, p2pForgeWssComponent)),
-		// If we had an Fx option we could do this:
-		libp2p.WithFxOption(
-			fx.Invoke(func(host host.Host) {
-				m.provideHost(host)
-			}),
-		),
-	)
+	return libp2p.AddrsFactory(addrFactoryFn(m.hasHost, func() peer.ID { return m.hostFn().ID() }, forgeDomain, cfg.allowPrivateForgeAddrs, p2pForgeWssComponent))
+
 }
 
 type dns01P2PForgeSolver struct {
 	forge              string
-	hostVal            func() host.Host
+	hostFn             func() host.Host
 	modifyForgeRequest func(r *http.Request) error
 }
 
@@ -315,7 +319,7 @@ func (d *dns01P2PForgeSolver) Wait(ctx context.Context, challenge acme.Challenge
 }
 
 func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challenge) error {
-	host := d.hostVal()
+	host := d.hostFn()
 	req, err := ChallengeRequest(ctx, d.forge, challenge.DNS01KeyAuthorization(), host.Addrs())
 	if err != nil {
 		return err
@@ -346,8 +350,11 @@ func (d *dns01P2PForgeSolver) CleanUp(ctx context.Context, challenge acme.Challe
 var _ acmez.Solver = (*dns01P2PForgeSolver)(nil)
 var _ acmez.Waiter = (*dns01P2PForgeSolver)(nil)
 
-func addrFactoryFn(peerIDFn func() peer.ID, forgeDomain string, allowPrivateForgeAddrs bool, p2pForgeWssComponent multiaddr.Multiaddr) func(multiaddrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
+func addrFactoryFn(hasPeerID func() bool, peerIDFn func() peer.ID, forgeDomain string, allowPrivateForgeAddrs bool, p2pForgeWssComponent multiaddr.Multiaddr) func(multiaddrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
 	return func(multiaddrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
+		if !hasPeerID() {
+			return multiaddrs
+		}
 		retAddrs := make([]multiaddr.Multiaddr, len(multiaddrs))
 		for i, a := range multiaddrs {
 			if isRelayAddr(a) || (!allowPrivateForgeAddrs && isPublicAddr(a)) {
