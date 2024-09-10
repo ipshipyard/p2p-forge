@@ -30,7 +30,11 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	httppeeridauth "github.com/libp2p/go-libp2p/p2p/http/auth"
+	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
+	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
+	libp2pwebrtc "github.com/libp2p/go-libp2p/p2p/transport/webrtc"
 	libp2pws "github.com/libp2p/go-libp2p/p2p/transport/websocket"
+	libp2pwebtransport "github.com/libp2p/go-libp2p/p2p/transport/webtransport"
 	"github.com/miekg/dns"
 	"github.com/multiformats/go-multiaddr"
 	madns "github.com/multiformats/go-multiaddr-dns"
@@ -416,16 +420,36 @@ func TestLibp2pACMEE2E(t *testing.T) {
 
 	acmeEndpoint := fmt.Sprintf("https://%s%s", acmeHTTPListener.Addr(), pebbleWFE.DirectoryPath)
 	certLoaded := make(chan bool, 1)
-	h, err := client.NewHostWithP2PForge(
-		client.WithP2PForgeCertMgrOptions(client.WithForgeDomain(forge), client.WithForgeRegistrationEndpoint(fmt.Sprintf("http://127.0.0.1:%d", httpPort)), client.WithCAEndpoint(acmeEndpoint), client.WithTrustedRoots(cas),
-			client.WithModifiedForgeRequest(func(req *http.Request) error {
-				req.Host = forgeRegistration
-				return nil
-			})),
+
+	certMgr, err := client.NewP2PForgeCertMgr(
+		client.WithForgeDomain(forge), client.WithForgeRegistrationEndpoint(fmt.Sprintf("http://127.0.0.1:%d", httpPort)), client.WithCAEndpoint(acmeEndpoint), client.WithTrustedRoots(cas),
+		client.WithModifiedForgeRequest(func(req *http.Request) error {
+			req.Host = forgeRegistration
+			return nil
+		}),
 		client.WithOnCertLoaded(func() {
 			certLoaded <- true
-		}),
-		client.WithAllowPrivateForgeAddrs())
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	certMgr.Start()
+	defer certMgr.Stop()
+
+	h, err := libp2p.New(libp2p.ChainOptions(
+		libp2p.DefaultListenAddrs,
+		libp2p.Transport(tcp.NewTCPTransport),
+		libp2p.Transport(libp2pquic.NewTransport),
+		libp2p.Transport(libp2pwebtransport.New),
+		libp2p.Transport(libp2pwebrtc.New),
+
+		libp2p.ListenAddrStrings(
+			certMgr.AddrStrings()..., // TODO reuse tcp port for ws
+		),
+		certMgr.WebSocketTransport(),
+		// Sets up any options taht the cert manager needs
+		certMgr.Libp2pOptions(client.WithAllowPrivateForgeAddrs()),
+	))
 	if err != nil {
 		t.Fatal(err)
 	}
