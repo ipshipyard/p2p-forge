@@ -18,7 +18,6 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/p2p/transport/websocket"
 	libp2pws "github.com/libp2p/go-libp2p/p2p/transport/websocket"
 	"github.com/mholt/acmez/v2"
 	"github.com/mholt/acmez/v2/acme"
@@ -279,13 +278,13 @@ func (m *P2PForgeCertMgr) Stop() {
 
 // WebSocketTransport returns a libp2p.Option that enables the WebSocket
 // transport for libp2p hosts with a TLS config managed by the P2PForgeCertMgr.
-func (m *P2PForgeCertMgr) WebSocketTransport(opts ...websocket.Option) libp2p.Option {
+func (m *P2PForgeCertMgr) WebSocketTransport(opts ...libp2pws.Option) libp2p.Option {
 	tlsCfg := m.cfg.TLSConfig()
 	tlsCfg.NextProtos = []string{"h2", "http/1.1"} // remove the ACME ALPN and set the HTTP 1.1 and 2 ALPNs
 	return libp2p.Transport(libp2pws.New, libp2pws.WithTLSConfig(tlsCfg))
 }
 
-func (m *P2PForgeCertMgr) AddrStrings(opts ...websocket.Option) []string {
+func (m *P2PForgeCertMgr) AddrStrings() []string {
 	return []string{fmt.Sprintf("/ip4/0.0.0.0/tcp/0/tls/sni/*.%s/ws", m.forgeDomain),
 		fmt.Sprintf("/ip6/::/tcp/0/tls/sni/*.%s/ws", m.forgeDomain),
 	}
