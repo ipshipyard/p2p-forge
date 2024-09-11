@@ -446,7 +446,7 @@ func TestLibp2pACMEE2E(t *testing.T) {
 		libp2p.ListenAddrStrings(
 			certMgr.AddrStrings()..., // TODO reuse tcp port for ws
 		),
-		certMgr.WebSocketTransport(),
+		libp2p.Transport(libp2pws.New, libp2pws.WithTLSConfig(certMgr.TLSConfig())),
 		// Sets up any options that the cert manager needs
 		certMgr.Libp2pOptions(client.WithAllowPrivateForgeAddrs()),
 	))

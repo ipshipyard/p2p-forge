@@ -355,10 +355,10 @@ func addrFactoryFn(hasPeerID func() bool, peerIDFn func() peer.ID, forgeDomain s
 		if !hasPeerID() {
 			return multiaddrs
 		}
-		retAddrs := make([]multiaddr.Multiaddr, len(multiaddrs))
-		for i, a := range multiaddrs {
+		retAddrs := make([]multiaddr.Multiaddr, 0, len(multiaddrs))
+		for _, a := range multiaddrs {
 			if isRelayAddr(a) || (!allowPrivateForgeAddrs && isPublicAddr(a)) {
-				retAddrs[i] = a
+				retAddrs = append(retAddrs, a)
 				continue
 			}
 
@@ -366,7 +366,7 @@ func addrFactoryFn(hasPeerID func() bool, peerIDFn func() peer.ID, forgeDomain s
 			// We'll then replace the * with the IP address
 			withoutForgeWSS := a.Decapsulate(p2pForgeWssComponent)
 			if withoutForgeWSS.Equal(a) {
-				retAddrs[i] = a
+				retAddrs = append(retAddrs, a)
 				continue
 			}
 
@@ -408,7 +408,7 @@ func addrFactoryFn(hasPeerID func() bool, peerIDFn func() peer.ID, forgeDomain s
 				return true
 			})
 			if index != 2 || escapedIPStr == "" || tcpPortStr == "" {
-				retAddrs[i] = a
+				retAddrs = append(retAddrs, a)
 				continue
 			}
 
@@ -418,10 +418,10 @@ func addrFactoryFn(hasPeerID func() bool, peerIDFn func() peer.ID, forgeDomain s
 			newMA, err := multiaddr.NewMultiaddr(newMaStr)
 			if err != nil {
 				log.Errorf("error creating new multiaddr from %q: %s", newMaStr, err.Error())
-				retAddrs[i] = a
+				retAddrs = append(retAddrs, a)
 				continue
 			}
-			retAddrs[i] = newMA
+			retAddrs = append(retAddrs, newMA)
 		}
 		return retAddrs
 	}
