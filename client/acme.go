@@ -16,7 +16,7 @@ import (
 
 	"github.com/caddyserver/certmagic"
 	logging "github.com/ipfs/go-log/v2"
-	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/config"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/mholt/acmez/v2"
@@ -289,7 +289,10 @@ func (m *P2PForgeCertMgr) AddrStrings() []string {
 	}
 }
 
-func (m *P2PForgeCertMgr) Libp2pOptions(opts ...P2PForgeHostOptions) libp2p.Option {
+// AddressFactory returns a function that rewrites a set of forge managed multiaddresses.
+// This should be used with the libp2p.AddrsFactory option to ensure that a libp2p host with forge managed addresses
+// only announces those that are active and valid.
+func (m *P2PForgeCertMgr) AddressFactory(opts ...P2PForgeHostOptions) config.AddrsFactory {
 	cfg := &P2PForgeHostConfig{}
 	for _, opt := range opts {
 		opt(cfg)
@@ -300,8 +303,7 @@ func (m *P2PForgeCertMgr) Libp2pOptions(opts ...P2PForgeHostOptions) libp2p.Opti
 	forgeDomain := m.forgeDomain
 
 	var p2pForgeWssComponent = multiaddr.StringCast(fmt.Sprintf("/tls/sni/*.%s/ws", forgeDomain))
-	return libp2p.AddrsFactory(addrFactoryFn(m.hasHost, func() peer.ID { return m.hostFn().ID() }, forgeDomain, cfg.allowPrivateForgeAddrs, p2pForgeWssComponent))
-
+	return addrFactoryFn(m.hasHost, func() peer.ID { return m.hostFn().ID() }, forgeDomain, cfg.allowPrivateForgeAddrs, p2pForgeWssComponent)
 }
 
 type dns01P2PForgeSolver struct {
