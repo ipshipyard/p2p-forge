@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -83,16 +82,6 @@ func isPublicAddr(a multiaddr.Multiaddr) bool {
 	}
 
 	return manet.IsPublicAddr(a) && !manet.IsNAT64IPv4ConvertedIPv6Addr(a)
-}
-
-func inAddrRange(ip net.IP, ipnets []*net.IPNet) bool {
-	for _, ipnet := range ipnets {
-		if ipnet.Contains(ip) {
-			return true
-		}
-	}
-
-	return false
 }
 
 type P2PForgeCertMgrConfig struct {
