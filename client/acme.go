@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"io"
@@ -18,7 +19,6 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
-	libp2pws "github.com/libp2p/go-libp2p/p2p/transport/websocket"
 	"github.com/mholt/acmez/v2"
 	"github.com/mholt/acmez/v2/acme"
 	"github.com/multiformats/go-multiaddr"
@@ -276,12 +276,11 @@ func (m *P2PForgeCertMgr) Stop() {
 	m.cancel()
 }
 
-// WebSocketTransport returns a libp2p.Option that enables the WebSocket
-// transport for libp2p hosts with a TLS config managed by the P2PForgeCertMgr.
-func (m *P2PForgeCertMgr) WebSocketTransport(opts ...libp2pws.Option) libp2p.Option {
+// TLSConfig returns a tls.Config that managed by the P2PForgeCertMgr
+func (m *P2PForgeCertMgr) TLSConfig() *tls.Config {
 	tlsCfg := m.cfg.TLSConfig()
-	tlsCfg.NextProtos = []string{"h2", "http/1.1"} // remove the ACME ALPN and set the HTTP 1.1 and 2 ALPNs
-	return libp2p.Transport(libp2pws.New, libp2pws.WithTLSConfig(tlsCfg))
+	tlsCfg.NextProtos = nil // remove the ACME ALPN
+	return tlsCfg
 }
 
 func (m *P2PForgeCertMgr) AddrStrings() []string {
