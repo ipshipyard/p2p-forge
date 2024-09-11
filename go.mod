@@ -3,14 +3,14 @@ module github.com/ipshipyard/p2p-forge
 go 1.22
 
 require (
-	github.com/aws/aws-sdk-go v1.51.25
+	github.com/aws/aws-sdk-go v1.55.5
 	github.com/caddyserver/certmagic v0.21.3
 	github.com/coredns/caddy v1.1.1
 	github.com/coredns/coredns v1.11.3
 	github.com/gorilla/mux v1.8.1
 	github.com/ipfs/go-datastore v0.6.0
 	github.com/ipfs/go-ds-badger4 v0.1.5
-	github.com/ipfs/go-ds-dynamodb v0.1.1
+	github.com/ipfs/go-ds-dynamodb v0.2.0
 	github.com/ipfs/go-log/v2 v2.5.1
 	github.com/letsencrypt/pebble/v2 v2.6.0
 	github.com/libp2p/go-libp2p v0.36.3-0.20240909195832-fbc0ac8f743c
@@ -201,7 +201,7 @@ require (
 	golang.org/x/net v0.27.0 // indirect
 	golang.org/x/oauth2 v0.21.0 // indirect
 	golang.org/x/sync v0.7.0 // indirect
-	golang.org/x/sys v0.22.0 // indirect
+	golang.org/x/sys v0.25.0 // indirect
 	golang.org/x/term v0.22.0 // indirect
 	golang.org/x/text v0.16.0 // indirect
 	golang.org/x/time v0.5.0 // indirect
