@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -31,6 +32,9 @@ import (
 
 var log = clog.NewWithPlugin(pluginName)
 
+const authEnvVar = "FORGE_ACCESS_TOKEN"
+const authForgeHeader = "Forge-Authorization"
+
 // acmeWriter implements writing of ACME Challenge DNS records by exporting an HTTP endpoint.
 type acmeWriter struct {
 	Addr        string
@@ -43,6 +47,8 @@ type acmeWriter struct {
 	nlSetup      bool
 	closeCertMgr func()
 	mux          *mux.Router
+
+	forgeAuthKey string
 }
 
 func (c *acmeWriter) OnStartup() error {
@@ -73,6 +79,10 @@ func (c *acmeWriter) OnStartup() error {
 		ln = tls.NewListener(ln, tlsConfig)
 	}
 
+	authKey, found := os.LookupEnv(authEnvVar)
+	if found {
+		c.forgeAuthKey = authKey
+	}
 	c.ln = ln
 
 	c.mux = mux.NewRouter()
@@ -87,6 +97,14 @@ func (c *acmeWriter) OnStartup() error {
 		PrivKey:  sk,
 		TokenTTL: time.Hour,
 		Next: func(peerID peer.ID, w http.ResponseWriter, r *http.Request) {
+			if c.forgeAuthKey != "" {
+				auth := r.Header.Get(authForgeHeader)
+				if c.forgeAuthKey != auth {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+			}
+
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
