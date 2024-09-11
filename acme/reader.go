@@ -70,7 +70,10 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 		m.SetReply(r)
 		m.Authoritative = true
 		m.Answer = answers
-		w.WriteMsg(&m)
+		err := w.WriteMsg(&m)
+		if err != nil {
+			return dns.RcodeServerFailure, err
+		}
 		return dns.RcodeSuccess, nil
 	}
 
