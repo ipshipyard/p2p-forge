@@ -481,6 +481,12 @@ func TestLibp2pACMEE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	select {
+	case <-certLoaded:
+	case <-time.After(time.Second * 30):
+		t.Fatal("timed out waiting for certificate")
+	}
+
 	var dialAddr multiaddr.Multiaddr
 	hAddrs := h.Addrs()
 	for _, addr := range hAddrs {
@@ -495,12 +501,6 @@ func TestLibp2pACMEE2E(t *testing.T) {
 	}
 	if dialAddr == nil {
 		t.Fatalf("no valid wss addresses: %v", hAddrs)
-	}
-
-	select {
-	case <-certLoaded:
-	case <-time.After(time.Second * 30):
-		t.Fatal("timed out waiting for certificate")
 	}
 
 	if err := h2.Connect(ctx, peer.AddrInfo{ID: h.ID(), Addrs: []multiaddr.Multiaddr{dialAddr}}); err != nil {

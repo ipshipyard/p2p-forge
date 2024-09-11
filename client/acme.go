@@ -37,6 +37,9 @@ type P2PForgeCertMgr struct {
 	hostFn                    func() host.Host
 	hasHost                   func() bool
 	cfg                       *certmagic.Config
+
+	hasCert     bool // tracking if we've received a certificate
+	certCheckMx sync.RWMutex
 }
 
 type P2PForgeHostConfig struct {
@@ -225,6 +228,15 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	})
 	certCfg.Issuers = []certmagic.Issuer{myACME}
 
+	mgr := &P2PForgeCertMgr{
+		forgeDomain:               mgrCfg.forgeDomain,
+		forgeRegistrationEndpoint: mgrCfg.forgeRegistrationEndpoint,
+		ProvideHost:               provideHost,
+		hostFn:                    hostFn,
+		hasHost:                   hasHostFn,
+		cfg:                       certCfg,
+	}
+
 	if mgrCfg.onCertLoaded != nil {
 		certCfg.OnEvent = func(ctx context.Context, event string, data map[string]any) error {
 			if event == "cached_managed_cert" {
@@ -241,6 +253,12 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 				certName := fmt.Sprintf("*.%s.%s", pidStr, mgrCfg.forgeDomain)
 				for _, san := range sanList {
 					if san == certName {
+						// When the certificate is loaded mark that it has been so we know we are good to use the domain name
+						// TODO: This won't handle if the cert expires and cannot get renewed
+						mgr.certCheckMx.Lock()
+						mgr.hasCert = true
+						mgr.certCheckMx.Unlock()
+						// Execute user function for on certificate load
 						mgrCfg.onCertLoaded()
 					}
 				}
@@ -250,14 +268,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		}
 	}
 
-	return &P2PForgeCertMgr{
-		forgeDomain:               mgrCfg.forgeDomain,
-		forgeRegistrationEndpoint: mgrCfg.forgeRegistrationEndpoint,
-		ProvideHost:               provideHost,
-		hostFn:                    hostFn,
-		hasHost:                   hasHostFn,
-		cfg:                       certCfg,
-	}, nil
+	return mgr, nil
 }
 
 func (m *P2PForgeCertMgr) Start() error {
@@ -300,10 +311,26 @@ func (m *P2PForgeCertMgr) AddressFactory(opts ...P2PForgeHostOptions) config.Add
 
 	tlsCfg := m.cfg.TLSConfig()
 	tlsCfg.NextProtos = []string{"h2", "http/1.1"} // remove the ACME ALPN and set the HTTP 1.1 and 2 ALPNs
-	forgeDomain := m.forgeDomain
 
-	var p2pForgeWssComponent = multiaddr.StringCast(fmt.Sprintf("/tls/sni/*.%s/ws", forgeDomain))
-	return addrFactoryFn(m.hasHost, func() peer.ID { return m.hostFn().ID() }, forgeDomain, cfg.allowPrivateForgeAddrs, p2pForgeWssComponent)
+	return m.createAddrsFactory(cfg.allowPrivateForgeAddrs)
+}
+
+func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool) config.AddrsFactory {
+	var p2pForgeWssComponent = multiaddr.StringCast(fmt.Sprintf("/tls/sni/*.%s/ws", m.forgeDomain))
+
+	return func(multiaddrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
+		var skipForgeAddrs bool
+		if !m.hasHost() {
+			skipForgeAddrs = true
+		}
+		m.certCheckMx.RLock()
+		if !m.hasCert {
+			skipForgeAddrs = true
+		}
+		m.certCheckMx.RUnlock()
+
+		return addrFactoryFn(skipForgeAddrs, func() peer.ID { return m.hostFn().ID() }, m.forgeDomain, allowPrivateForgeAddrs, p2pForgeWssComponent, multiaddrs)
+	}
 }
 
 type dns01P2PForgeSolver struct {
@@ -350,79 +377,84 @@ func (d *dns01P2PForgeSolver) CleanUp(ctx context.Context, challenge acme.Challe
 var _ acmez.Solver = (*dns01P2PForgeSolver)(nil)
 var _ acmez.Waiter = (*dns01P2PForgeSolver)(nil)
 
-func addrFactoryFn(hasPeerID func() bool, peerIDFn func() peer.ID, forgeDomain string, allowPrivateForgeAddrs bool, p2pForgeWssComponent multiaddr.Multiaddr) func(multiaddrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
-	return func(multiaddrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
-		if !hasPeerID() {
-			return multiaddrs
+func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain string, allowPrivateForgeAddrs bool, p2pForgeWssComponent multiaddr.Multiaddr, multiaddrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
+	retAddrs := make([]multiaddr.Multiaddr, 0, len(multiaddrs))
+	for _, a := range multiaddrs {
+		if isRelayAddr(a) {
+			retAddrs = append(retAddrs, a)
+			continue
 		}
-		retAddrs := make([]multiaddr.Multiaddr, 0, len(multiaddrs))
-		for _, a := range multiaddrs {
-			if isRelayAddr(a) || (!allowPrivateForgeAddrs && isPublicAddr(a)) {
-				retAddrs = append(retAddrs, a)
-				continue
-			}
 
-			// We expect the address to be of the form: /ipX/<IP address>/tcp/<Port>/tls/sni/*.<forge-domain>/ws
-			// We'll then replace the * with the IP address
-			withoutForgeWSS := a.Decapsulate(p2pForgeWssComponent)
-			if withoutForgeWSS.Equal(a) {
-				retAddrs = append(retAddrs, a)
-				continue
-			}
+		// We expect the address to be of the form: /ipX/<IP address>/tcp/<Port>/tls/sni/*.<forge-domain>/ws
+		// We'll then replace the * with the IP address
+		withoutForgeWSS := a.Decapsulate(p2pForgeWssComponent)
+		if withoutForgeWSS.Equal(a) {
+			retAddrs = append(retAddrs, a)
+			continue
+		}
 
-			index := 0
-			var escapedIPStr string
-			var ipMaStr string
-			var tcpPortStr string
-			multiaddr.ForEach(withoutForgeWSS, func(c multiaddr.Component) bool {
-				switch index {
-				case 0:
-					switch c.Protocol().Code {
-					case multiaddr.P_IP4:
-						ipMaStr = c.String()
-						ipAddr := c.Value()
-						escapedIPStr = strings.ReplaceAll(ipAddr, ".", "-")
-					case multiaddr.P_IP6:
-						ipMaStr = c.String()
-						ipAddr := c.Value()
-						escapedIPStr = strings.ReplaceAll(ipAddr, ":", "-")
-						if escapedIPStr[0] == '-' {
-							escapedIPStr = "0" + escapedIPStr
-						}
-						if escapedIPStr[len(escapedIPStr)-1] == '-' {
-							escapedIPStr = escapedIPStr + "0"
-						}
-					default:
-						return false
+		index := 0
+		var escapedIPStr string
+		var ipMaStr string
+		var tcpPortStr string
+		multiaddr.ForEach(withoutForgeWSS, func(c multiaddr.Component) bool {
+			switch index {
+			case 0:
+				switch c.Protocol().Code {
+				case multiaddr.P_IP4:
+					ipMaStr = c.String()
+					ipAddr := c.Value()
+					escapedIPStr = strings.ReplaceAll(ipAddr, ".", "-")
+				case multiaddr.P_IP6:
+					ipMaStr = c.String()
+					ipAddr := c.Value()
+					escapedIPStr = strings.ReplaceAll(ipAddr, ":", "-")
+					if escapedIPStr[0] == '-' {
+						escapedIPStr = "0" + escapedIPStr
 					}
-				case 1:
-					if c.Protocol().Code != multiaddr.P_TCP {
-						return false
+					if escapedIPStr[len(escapedIPStr)-1] == '-' {
+						escapedIPStr = escapedIPStr + "0"
 					}
-					tcpPortStr = c.Value()
 				default:
-					index++
 					return false
 				}
+			case 1:
+				if c.Protocol().Code != multiaddr.P_TCP {
+					return false
+				}
+				tcpPortStr = c.Value()
+			default:
 				index++
-				return true
-			})
-			if index != 2 || escapedIPStr == "" || tcpPortStr == "" {
-				retAddrs = append(retAddrs, a)
-				continue
+				return false
 			}
-
-			pidStr := peer.ToCid(peerIDFn()).Encode(multibase.MustNewEncoder(multibase.Base36))
-
-			newMaStr := fmt.Sprintf("%s/tcp/%s/tls/sni/%s.%s.%s/ws", ipMaStr, tcpPortStr, escapedIPStr, pidStr, forgeDomain)
-			newMA, err := multiaddr.NewMultiaddr(newMaStr)
-			if err != nil {
-				log.Errorf("error creating new multiaddr from %q: %s", newMaStr, err.Error())
-				retAddrs = append(retAddrs, a)
-				continue
-			}
-			retAddrs = append(retAddrs, newMA)
+			index++
+			return true
+		})
+		if index != 2 || escapedIPStr == "" || tcpPortStr == "" {
+			retAddrs = append(retAddrs, a)
+			continue
 		}
-		return retAddrs
+
+		// It looks like it's a valid forge address, now figure out if we skip these forge addresses
+		if skipForgeAddrs {
+			continue
+		}
+
+		// don't return non-public forge addresses unless explicitly opted in
+		if !allowPrivateForgeAddrs && !isPublicAddr(a) {
+			continue
+		}
+
+		pidStr := peer.ToCid(peerIDFn()).Encode(multibase.MustNewEncoder(multibase.Base36))
+
+		newMaStr := fmt.Sprintf("%s/tcp/%s/tls/sni/%s.%s.%s/ws", ipMaStr, tcpPortStr, escapedIPStr, pidStr, forgeDomain)
+		newMA, err := multiaddr.NewMultiaddr(newMaStr)
+		if err != nil {
+			log.Errorf("error creating new multiaddr from %q: %s", newMaStr, err.Error())
+			retAddrs = append(retAddrs, a)
+			continue
+		}
+		retAddrs = append(retAddrs, newMA)
 	}
+	return retAddrs
 }
