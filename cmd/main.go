@@ -9,17 +9,13 @@ import (
 	"github.com/coredns/coredns/coremain"
 )
 
-var directives = []string{
-	"log",
-	"whoami",
-	"startup",
-	"shutdown",
+var customDirectives = []string{
 	"ipparser",
 	"acme",
 }
 
 func init() {
-	dnsserver.Directives = directives
+	dnsserver.Directives = append(dnsserver.Directives, customDirectives...)
 }
 
 func main() {
