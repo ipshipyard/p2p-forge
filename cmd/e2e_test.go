@@ -427,6 +427,7 @@ func TestLibp2pACMEE2E(t *testing.T) {
 			req.Host = forgeRegistration
 			return nil
 		}),
+		client.WithAllowPrivateForgeAddrs(),
 		client.WithOnCertLoaded(func() {
 			certLoaded <- true
 		}))
@@ -447,7 +448,7 @@ func TestLibp2pACMEE2E(t *testing.T) {
 			certMgr.AddrStrings()..., // TODO reuse tcp port for ws
 		),
 		libp2p.Transport(libp2pws.New, libp2pws.WithTLSConfig(certMgr.TLSConfig())),
-		libp2p.AddrsFactory(certMgr.AddressFactory(client.WithAllowPrivateForgeAddrs())),
+		libp2p.AddrsFactory(certMgr.AddressFactory()),
 	))
 	if err != nil {
 		t.Fatal(err)

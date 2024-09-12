@@ -28,37 +28,18 @@ import (
 var log = logging.Logger("p2p-forge/client")
 
 type P2PForgeCertMgr struct {
-	ctx                       context.Context
-	cancel                    func()
-	forgeDomain               string
-	forgeRegistrationEndpoint string
-	ProvideHost               func(host.Host)
-	hostFn                    func() host.Host
-	hasHost                   func() bool
-	cfg                       *certmagic.Config
+	ctx                        context.Context
+	cancel                     func()
+	forgeDomain                string
+	forgeRegistrationEndpoint  string
+	ProvideHost                func(host.Host)
+	hostFn                     func() host.Host
+	hasHost                    func() bool
+	cfg                        *certmagic.Config
+	allowPrivateForgeAddresses bool
 
 	hasCert     bool // tracking if we've received a certificate
 	certCheckMx sync.RWMutex
-}
-
-type P2PForgeHostConfig struct {
-	certMgrOpts            []P2PForgeCertMgrOptions
-	allowPrivateForgeAddrs bool
-}
-
-type P2PForgeHostOptions func(*P2PForgeHostConfig)
-
-func WithP2PForgeCertMgrOptions(opts ...P2PForgeCertMgrOptions) P2PForgeHostOptions {
-	return func(h *P2PForgeHostConfig) {
-		h.certMgrOpts = append(h.certMgrOpts, opts...)
-	}
-}
-
-// WithAllowPrivateForgeAddrs is meant for testing
-func WithAllowPrivateForgeAddrs() P2PForgeHostOptions {
-	return func(h *P2PForgeHostConfig) {
-		h.allowPrivateForgeAddrs = true
-	}
 }
 
 func isRelayAddr(a multiaddr.Multiaddr) bool {
@@ -85,14 +66,15 @@ func isPublicAddr(a multiaddr.Multiaddr) bool {
 }
 
 type P2PForgeCertMgrConfig struct {
-	forgeDomain               string
-	forgeRegistrationEndpoint string
-	caEndpoint                string
-	userEmail                 string
-	trustedRoots              *x509.CertPool
-	storage                   certmagic.Storage
-	modifyForgeRequest        func(r *http.Request) error
-	onCertLoaded              func()
+	forgeDomain                string
+	forgeRegistrationEndpoint  string
+	caEndpoint                 string
+	userEmail                  string
+	trustedRoots               *x509.CertPool
+	storage                    certmagic.Storage
+	modifyForgeRequest         func(r *http.Request) error
+	onCertLoaded               func()
+	allowPrivateForgeAddresses bool
 }
 
 type P2PForgeCertMgrOptions func(*P2PForgeCertMgrConfig) error
@@ -156,6 +138,14 @@ func WithTrustedRoots(trustedRoots *x509.CertPool) P2PForgeCertMgrOptions {
 	}
 }
 
+// WithAllowPrivateForgeAddrs is meant for testing
+func WithAllowPrivateForgeAddrs() P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.allowPrivateForgeAddresses = true
+		return nil
+	}
+}
+
 // NewP2PForgeCertMgr handles the creation and management of certificates that are automatically granted by a forge
 // to a libp2p host.
 //
@@ -209,10 +199,15 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	})
 
 	myACME := certmagic.NewACMEIssuer(certCfg, certmagic.ACMEIssuer{ // TODO: UX around user passed emails + agreement
-		CA:           mgrCfg.caEndpoint,
-		Email:        mgrCfg.userEmail,
-		Agreed:       true,
-		DNS01Solver:  &dns01P2PForgeSolver{mgrCfg.forgeRegistrationEndpoint, hostFn, mgrCfg.modifyForgeRequest},
+		CA:     mgrCfg.caEndpoint,
+		Email:  mgrCfg.userEmail,
+		Agreed: true,
+		DNS01Solver: &dns01P2PForgeSolver{
+			forge:                      mgrCfg.forgeRegistrationEndpoint,
+			hostFn:                     hostFn,
+			modifyForgeRequest:         mgrCfg.modifyForgeRequest,
+			allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
+		},
 		TrustedRoots: mgrCfg.trustedRoots,
 	})
 	certCfg.Issuers = []certmagic.Issuer{myACME}
@@ -292,16 +287,11 @@ func (m *P2PForgeCertMgr) AddrStrings() []string {
 // AddressFactory returns a function that rewrites a set of forge managed multiaddresses.
 // This should be used with the libp2p.AddrsFactory option to ensure that a libp2p host with forge managed addresses
 // only announces those that are active and valid.
-func (m *P2PForgeCertMgr) AddressFactory(opts ...P2PForgeHostOptions) config.AddrsFactory {
-	cfg := &P2PForgeHostConfig{}
-	for _, opt := range opts {
-		opt(cfg)
-	}
-
+func (m *P2PForgeCertMgr) AddressFactory() config.AddrsFactory {
 	tlsCfg := m.cfg.TLSConfig()
 	tlsCfg.NextProtos = []string{"h2", "http/1.1"} // remove the ACME ALPN and set the HTTP 1.1 and 2 ALPNs
 
-	return m.createAddrsFactory(cfg.allowPrivateForgeAddrs)
+	return m.createAddrsFactory(m.allowPrivateForgeAddresses)
 }
 
 func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool) config.AddrsFactory {
@@ -323,9 +313,10 @@ func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool) config
 }
 
 type dns01P2PForgeSolver struct {
-	forge              string
-	hostFn             func() host.Host
-	modifyForgeRequest func(r *http.Request) error
+	forge                      string
+	hostFn                     func() host.Host
+	modifyForgeRequest         func(r *http.Request) error
+	allowPrivateForgeAddresses bool
 }
 
 func (d *dns01P2PForgeSolver) Wait(ctx context.Context, challenge acme.Challenge) error {
@@ -335,8 +326,27 @@ func (d *dns01P2PForgeSolver) Wait(ctx context.Context, challenge acme.Challenge
 }
 
 func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challenge) error {
-	host := d.hostFn()
-	req, err := ChallengeRequest(ctx, d.forge, challenge.DNS01KeyAuthorization(), host.Addrs())
+	h := d.hostFn()
+	addrs := h.Addrs()
+	var advertisedAddrs []multiaddr.Multiaddr
+
+	if !d.allowPrivateForgeAddresses {
+		var publicAddrs []multiaddr.Multiaddr
+		for _, addr := range addrs {
+			if isPublicAddr(addr) {
+				publicAddrs = append(publicAddrs, addr)
+			}
+		}
+
+		if len(publicAddrs) == 0 {
+			return fmt.Errorf("no public address found")
+		}
+		advertisedAddrs = publicAddrs
+	} else {
+		advertisedAddrs = addrs
+	}
+
+	req, err := ChallengeRequest(ctx, d.forge, challenge.DNS01KeyAuthorization(), advertisedAddrs)
 	if err != nil {
 		return err
 	}
@@ -346,7 +356,7 @@ func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challe
 		}
 	}
 
-	client := &httppeeridauth.ClientPeerIDAuth{PrivKey: host.Peerstore().PrivKey(host.ID())}
+	client := &httppeeridauth.ClientPeerIDAuth{PrivKey: h.Peerstore().PrivKey(h.ID())}
 	_, resp, err := client.AuthenticatedDo(http.DefaultClient, req)
 	if err != nil {
 		return err
