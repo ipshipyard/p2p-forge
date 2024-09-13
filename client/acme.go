@@ -213,12 +213,13 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	certCfg.Issuers = []certmagic.Issuer{myACME}
 
 	mgr := &P2PForgeCertMgr{
-		forgeDomain:               mgrCfg.forgeDomain,
-		forgeRegistrationEndpoint: mgrCfg.forgeRegistrationEndpoint,
-		ProvideHost:               provideHost,
-		hostFn:                    hostFn,
-		hasHost:                   hasHostFn,
-		cfg:                       certCfg,
+		forgeDomain:                mgrCfg.forgeDomain,
+		forgeRegistrationEndpoint:  mgrCfg.forgeRegistrationEndpoint,
+		ProvideHost:                provideHost,
+		hostFn:                     hostFn,
+		hasHost:                    hasHostFn,
+		cfg:                        certCfg,
+		allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
 	}
 
 	if mgrCfg.onCertLoaded != nil {
