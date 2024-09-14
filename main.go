@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	_ "github.com/coredns/coredns/core/plugin" // Load all managed plugins in github.com/coredns/coredns.
 	_ "github.com/ipshipyard/p2p-forge/acme"
 	_ "github.com/ipshipyard/p2p-forge/ipparser"
@@ -35,5 +37,6 @@ func init() {
 }
 
 func main() {
+	fmt.Printf("%s %s\n", name, version) // always print version
 	coremain.Run()
 }

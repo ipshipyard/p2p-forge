@@ -4,7 +4,7 @@
 
 ## Build
 
-`go build` will build the binary in your local directory
+`go build` will build the `p2p-forge` binary in your local directory
 
 ## Install
 
@@ -15,14 +15,33 @@ $ go install github.com/ipshipyard/p2p-forge@latest
 Will download using go mod, build and install the binary in your global Go binary directory (e.g. `~/go/bin`)
 
 ### From source
-`go install` will build and install the binary in your global Go binary directory (e.g. `~/go/bin`)
+
+`go install` will build and install the `p2p-forge` binary in your global Go binary directory (e.g. `~/go/bin`)
 
 ## Usage
+
+### Local testing
+
+Build and run on custom port:
+
+```console
+$ ./p2p-forge -dns.port 5353
+$ docker build -t p2p-forge . && docker run --rm -it --net=host p2p-forge -dns.port 5353
+```
+
+Test with `dig`:
+
+```console
+$ dig A 1-2-3-4.k51qzi5uqu5dlwfht6wwy7lp4z35bgytksvp5sg53fdhcocmirjepowgifkxqd.libp2p.direct @localhost -p 5353
+1.2.3.4
+```
 
 ### Configuration
 
 This binary is based on [CoreDNS](https://github.com/coredns/coredns) which is itself based on Caddy.
 To run the binary create a file `Corefile` following the syntax listed in the CoreDNS documentation.
+
+A custom configuration can be passed via `./p2p-forge -conf Corefile.example`
 
 This binary introduces two additional plugins:
 - `ipparser` which handles returning A and AAAA records for domains like `<encoded-ip-address>.<peerID>.libp2p.direct`
@@ -64,7 +83,7 @@ It does the following:
 ``` corefile
 . {
     log
-	ipparser libp2p.direct
+    ipparser libp2p.direct
     acme libp2p.direct {
         registration-domain registration.libp2p.direct listen-address=:443 external-tls=false
         database-type dynamo mytable

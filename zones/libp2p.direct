@@ -1,0 +1,33 @@
+;; SOA Records
+libp2p.direct.                  300     IN      SOA     ns1.libp2p.direct. domains.ipshipyard.com. 2047792117 10000 2400 604800 300
+
+;; DNS Service
+libp2p.direct.                  86400   IN      NS      ns1.libp2p.direct.
+libp2p.direct.                  86400   IN      NS      ns2.libp2p.direct.
+libp2p.direct.                  300     IN      NS      ns1-40-160-8-207.nip.io. ; TODO: alias for ns1/ns2 under different tld
+libp2p.direct.                  300     IN      NS      ns2-15-204-28-76.nip.io. ; TODO: replace with additonal instances
+
+ns1.libp2p.direct.              86400   IN      A       40.160.8.207
+ns1.libp2p.direct.              86400   IN      AAAA    2604:2dc0:101:100::265
+
+ns2.libp2p.direct.              86400   IN      A       15.204.28.76
+ns2.libp2p.direct.              86400   IN      AAAA    2604:2dc0:202:200::64e
+
+;; TLS Provider
+libp2p.direct.				                  IN	    CAA	    0 issue "letsencrypt.org"
+
+;; HTTP Service
+libp2p.direct.                  300     IN      CNAME   ns1.libp2p.direct.
+registration.libp2p.direct.     300     IN      CNAME	  ns1.libp2p.direct.
+
+;; PSL Records
+_psl.libp2p.direct.             86400   IN      TXT     "https://github.com/publicsuffix/list/pull/2084"
+_psl.libp2p.direct.             86400   IN      TXT     "https://github.com/publicsuffix/list/pull/2105"
+
+;; Email blocking
+libp2p.direct.                  86400   IN      MX      0 .
+libp2p.direct.                  86400   IN      TXT     "v=spf1 -all"
+_dmarc.libp2p.direct.           86400   IN      TXT     "v=DMARC1;p=reject;sp=reject;adkim=s;aspf=s"
+*._domainkey.libp2p.direct.     86400   IN      TXT     "v=DKIM1; p="
+
+; vim: ts=2 sw=2 et :

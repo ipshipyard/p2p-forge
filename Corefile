@@ -1,0 +1,6 @@
+libp2p.direct {
+    log
+    errors
+    ipparser libp2p.direct
+    file zones/libp2p.direct
+}

@@ -1,0 +1,4 @@
+cmd/db.*
+cmd/Corefile
+cmd/cmd
+p2p-forge
