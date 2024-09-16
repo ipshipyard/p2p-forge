@@ -1,11 +1,20 @@
+$TTL 300
+$ORIGIN libp2p.direct.
+
 ;; SOA Records
-libp2p.direct.                  300     IN      SOA     ns1.libp2p.direct. domains.ipshipyard.com. 2047792117 10000 2400 604800 300
+@                               600     IN      SOA     ns1.p2p-forge.dwebops.net. domains.ipshipyard.com. (
+                                                        2024091601  ; serial
+                                                        10000       ; refresh
+                                                        2400        ; retry
+                                                        604800      ; expire
+                                                        300         ; minimum
+                                                        )
 
 ;; DNS Service
 libp2p.direct.                  86400   IN      NS      ns1.libp2p.direct.
 libp2p.direct.                  86400   IN      NS      ns2.libp2p.direct.
-libp2p.direct.                  300     IN      NS      ns1-40-160-8-207.nip.io. ; TODO: alias for ns1/ns2 under different tld
-libp2p.direct.                  300     IN      NS      ns2-15-204-28-76.nip.io. ; TODO: replace with additonal instances
+libp2p.direct.                  86400   IN      NS      ns1.p2p-forge.dwebops.net.
+libp2p.direct.                  86400   IN      NS      ns2.p2p-forge.dwebops.net.
 
 ns1.libp2p.direct.              86400   IN      A       40.160.8.207
 ns1.libp2p.direct.              86400   IN      AAAA    2604:2dc0:101:100::265
