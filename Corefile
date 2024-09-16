@@ -1,6 +1,7 @@
 libp2p.direct {
     log
     errors
+    any # RFC 8482
     ipparser libp2p.direct
     file zones/libp2p.direct
 }
