@@ -2,9 +2,9 @@ $TTL 300
 $ORIGIN libp2p.direct.
 
 ;; SOA Records
-@                               600     IN      SOA     ns1.p2p-forge.dwebops.net. domains.ipshipyard.com. (
-                                                        2024091601  ; serial
-                                                        10000       ; refresh
+@                               86400   IN      SOA     ns1.p2p-forge.dwebops.net. domains.ipshipyard.com. (
+                                                        2024091603  ; serial
+                                                        86400       ; refresh
                                                         2400        ; retry
                                                         604800      ; expire
                                                         300         ; minimum
@@ -26,8 +26,8 @@ ns2.libp2p.direct.              86400   IN      AAAA    2604:2dc0:202:200::64e
 libp2p.direct.				                  IN	    CAA	    0 issue "letsencrypt.org"
 
 ;; HTTP Service
-libp2p.direct.                  300     IN      CNAME   ns1.libp2p.direct.
-registration.libp2p.direct.     300     IN      CNAME	  ns1.libp2p.direct.
+libp2p.direct.                  3600    IN      A       40.160.8.207
+registration.libp2p.direct.     3600    IN      A       40.160.8.207
 
 ;; PSL Records
 _psl.libp2p.direct.             86400   IN      TXT     "https://github.com/publicsuffix/list/pull/2084"
