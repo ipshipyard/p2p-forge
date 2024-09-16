@@ -35,6 +35,7 @@ func setup(c *caddy.Controller) error {
 	// Add the read portion of the plugin to CoreDNS, so Servers can use it in their plugin chain.
 	// The write portion is not *really* a plugin just a separate webserver running.
 	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
+		reader.Next = next
 		return reader
 	})
 
