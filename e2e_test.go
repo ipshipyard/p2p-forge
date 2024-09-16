@@ -53,12 +53,21 @@ import (
 const forge = "libp2p.direct"
 const forgeRegistration = "registration.libp2p.direct"
 
+const authEnvVar = "FORGE_ACCESS_TOKEN"
+const authToken = "testToken"
+const authForgeHeader = "Forge-Authorization"
+
 var dnsServerAddress string
 var httpPort int
 
 func TestMain(m *testing.M) {
 	tmpDir, err := os.MkdirTemp("", "p2p-forge")
 	if err != nil {
+		fmt.Println(err.Error())
+		os.Exit(1)
+	}
+
+	if err := os.Setenv(authEnvVar, authToken); err != nil {
 		fmt.Println(err.Error())
 		os.Exit(1)
 	}
@@ -138,6 +147,7 @@ func TestSetACMEChallenge(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Host = forgeRegistration
+	req.Header.Set(authForgeHeader, authToken)
 
 	peerHTTPClient := &httppeeridauth.ClientPeerIDAuth{PrivKey: sk}
 	_, resp, err := peerHTTPClient.AuthenticatedDo(http.DefaultClient, req)
@@ -425,6 +435,7 @@ func TestLibp2pACMEE2E(t *testing.T) {
 		client.WithForgeDomain(forge), client.WithForgeRegistrationEndpoint(fmt.Sprintf("http://127.0.0.1:%d", httpPort)), client.WithCAEndpoint(acmeEndpoint), client.WithTrustedRoots(cas),
 		client.WithModifiedForgeRequest(func(req *http.Request) error {
 			req.Host = forgeRegistration
+			req.Header.Set(authForgeHeader, authToken)
 			return nil
 		}),
 		client.WithAllowPrivateForgeAddrs(),

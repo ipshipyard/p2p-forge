@@ -82,7 +82,11 @@ func (c *acmeWriter) OnStartup() error {
 	authKey, found := os.LookupEnv(authEnvVar)
 	if found {
 		c.forgeAuthKey = authKey
+	} else {
+		// TODO: Remove when ready for rollout
+		return fmt.Errorf("environment variable %s not found", authEnvVar)
 	}
+
 	c.ln = ln
 
 	c.mux = mux.NewRouter()
