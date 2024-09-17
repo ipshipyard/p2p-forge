@@ -2,8 +2,8 @@ $TTL 300
 $ORIGIN libp2p.direct.
 
 ;; SOA Records
-@                               86400   IN      SOA     ns1.p2p-forge.dwebops.net. domains.ipshipyard.com. (
-                                                        2024091603  ; serial
+@                               86400   IN      SOA     ns1.libp2p.direct. domains.ipshipyard.com. (
+                                                        2024091701  ; serial
                                                         86400       ; refresh
                                                         2400        ; retry
                                                         604800      ; expire
