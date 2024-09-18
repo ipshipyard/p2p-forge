@@ -27,6 +27,12 @@ import (
 
 var log = logging.Logger("p2p-forge/client")
 
+const (
+	DefaultForgeDomain   = "libp2p.direct"
+	DefaultForgeEndpoint = "https://registration.libp2p.direct"
+	DefaultCAEndpoint    = certmagic.LetsEncryptProductionCA
+)
+
 type P2PForgeCertMgr struct {
 	ctx                        context.Context
 	cancel                     func()
@@ -159,17 +165,15 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		}
 	}
 
-	const libp2pDirectName = "libp2p.direct"
-	const libp2pDirectRegistrationEndpoint = "https://registration.libp2p.direct"
 	if mgrCfg.forgeDomain == "" {
 		mgrCfg.forgeDomain = "libp2p.direct"
 	}
 	if mgrCfg.caEndpoint == "" {
-		mgrCfg.caEndpoint = certmagic.LetsEncryptProductionCA
+		mgrCfg.caEndpoint = DefaultCAEndpoint
 	}
 	if mgrCfg.forgeRegistrationEndpoint == "" {
-		if mgrCfg.forgeDomain == libp2pDirectName {
-			mgrCfg.forgeRegistrationEndpoint = libp2pDirectRegistrationEndpoint
+		if mgrCfg.forgeDomain == DefaultForgeDomain {
+			mgrCfg.forgeRegistrationEndpoint = DefaultForgeEndpoint
 		} else {
 			return nil, fmt.Errorf("must specify the forge registration endpoint if using a non-default forge")
 		}
