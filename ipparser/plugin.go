@@ -50,35 +50,45 @@ const ttl = 1 * time.Hour
 // ServeDNS implements the plugin.Handler interface.
 func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	var answers []dns.RR
+	containsNODATAResponse := false
 	for _, q := range r.Question {
-		if q.Qtype != dns.TypeA && q.Qtype != dns.TypeAAAA && q.Qtype != dns.TypeANY {
-			continue
-		}
-
 		subdomain := strings.TrimSuffix(q.Name, "."+p.ForgeDomain+".")
 		if len(subdomain) == len(q.Name) || len(subdomain) == 0 {
 			continue
 		}
 
 		domainSegments := strings.Split(subdomain, ".")
-		if len(domainSegments) != 2 {
+		if len(domainSegments) > 2 {
 			continue
 		}
 
-		peerIDStr := domainSegments[1]
+		peerIDStr := domainSegments[len(domainSegments)-1]
 		_, err := peer.Decode(peerIDStr)
 		if err != nil {
 			continue
 		}
 
+		// Need to handle <peerID>.forgeDomain to return NODATA rather than NXDOMAIN per https://datatracker.ietf.org/doc/html/rfc8020
+		if len(domainSegments) == 1 {
+			containsNODATAResponse = true
+			continue
+		}
+
 		prefix := domainSegments[0]
 		segments := strings.Split(prefix, "-")
-		if len(segments) == 4 && (q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY) {
+		if len(segments) == 4 {
 			ipStr := strings.Join(segments, ".")
 			ip, err := netip.ParseAddr(ipStr)
 			if err != nil {
 				continue
 			}
+
+			// Need to handle <ipv4>.<peerID>.forgeDomain to return NODATA rather than NXDOMAIN per https://datatracker.ietf.org/doc/html/rfc8020
+			if !(q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY) {
+				containsNODATAResponse = true
+				continue
+			}
+
 			answers = append(answers, &dns.A{
 				Hdr: dns.RR_Header{
 					Name:   dns.Fqdn(q.Name),
@@ -88,10 +98,6 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				},
 				A: ip.AsSlice(),
 			})
-			continue
-		}
-
-		if !(q.Qtype == dns.TypeAAAA || q.Qtype == dns.TypeANY) {
 			continue
 		}
 
@@ -106,6 +112,11 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			continue
 		}
 
+		if !(q.Qtype == dns.TypeAAAA || q.Qtype == dns.TypeANY) {
+			containsNODATAResponse = true
+			continue
+		}
+
 		answers = append(answers, &dns.AAAA{
 			Hdr: dns.RR_Header{
 				Name:   dns.Fqdn(q.Name),
@@ -117,7 +128,7 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		})
 	}
 
-	if len(answers) > 0 {
+	if len(answers) > 0 || containsNODATAResponse {
 		var m dns.Msg
 		m.SetReply(r)
 		m.Authoritative = true

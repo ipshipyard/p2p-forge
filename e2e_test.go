@@ -126,6 +126,102 @@ func TestMain(m *testing.M) {
 	instance.Wait()
 }
 
+// Need to handle <peerID>.forgeDomain to return NODATA rather than NXDOMAIN per https://datatracker.ietf.org/doc/html/rfc8020
+func TestRFC8020(t *testing.T) {
+	_, pk, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerID, err := peer.IDFromPublicKey(pk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerIDb36, err := peer.ToCid(peerID).StringOfBase(multibase.Base36)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := new(dns.Msg)
+	m.Question = make([]dns.Question, 1)
+	m.Question[0] = dns.Question{Qclass: dns.ClassINET, Name: fmt.Sprintf("%s.%s.", peerIDb36, forge), Qtype: dns.TypeTXT}
+
+	r, err := dns.Exchange(m, dnsServerAddress)
+	if err != nil {
+		t.Fatalf("Could not send message: %s", err)
+	}
+	if r.Rcode != dns.RcodeSuccess {
+		t.Fatalf("Expected successful reply, got %s", dns.RcodeToString[r.Rcode])
+	}
+	if len(r.Answer) != 0 {
+		t.Fatalf("expected no answers got %+v", r.Answer)
+	}
+}
+
+// For valid subdomains (e.g. <ipv4|6>.<peerID>.forgeDomain) even though only A or AAAA records might be supported
+// we should return a successful lookup with no answer rather than erroring
+func TestIPSubdomainsNonExistentRecords(t *testing.T) {
+	_, pk, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerID, err := peer.IDFromPublicKey(pk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerIDb36, err := peer.ToCid(peerID).StringOfBase(multibase.Base36)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		subdomain string
+		qtype     uint16
+	}{
+		{
+			name:      "AAAA_ipv4.peerID.forge",
+			subdomain: "1-2-3-4",
+			qtype:     dns.TypeAAAA,
+		},
+		{
+			name:      "TXT_ipv4.peerID.forge",
+			subdomain: "1-2-3-4",
+			qtype:     dns.TypeTXT,
+		},
+		{
+			name:      "A_ipv6.peerID.forge",
+			subdomain: "1234-5678-90AB-CDEF-1-22-33-444",
+			qtype:     dns.TypeA,
+		},
+		{
+			name:      "TXT_ipv6.peerID.forge",
+			subdomain: "1234-5678-90AB-CDEF-1-22-33-444",
+			qtype:     dns.TypeTXT,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			domain := fmt.Sprintf("%s.%s.%s.", tt.subdomain, peerIDb36, forge)
+			m := new(dns.Msg)
+			m.Question = make([]dns.Question, 1)
+			m.Question[0] = dns.Question{Qclass: dns.ClassINET, Name: domain, Qtype: tt.qtype}
+
+			r, err := dns.Exchange(m, dnsServerAddress)
+			if err != nil {
+				t.Fatalf("Could not send message: %s", err)
+			}
+			if r.Rcode != dns.RcodeSuccess {
+				t.Fatalf("Expected successful reply, got %s", dns.RcodeToString[r.Rcode])
+			}
+			if len(r.Answer) != 0 {
+				t.Fatalf("expected no answers got %+v", r.Answer)
+			}
+			return
+		})
+	}
+}
+
 func TestSetACMEChallenge(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -220,7 +316,7 @@ func TestIPv4Lookup(t *testing.T) {
 			name:            "IPv4-AAAA",
 			qtype:           dns.TypeAAAA,
 			subdomain:       "1-2-3-4",
-			expectedSuccess: false,
+			expectedSuccess: true,
 			expectedAddress: "",
 		},
 		{
@@ -264,9 +360,17 @@ func TestIPv4Lookup(t *testing.T) {
 				return
 			}
 
-			if r.Rcode != dns.RcodeSuccess || len(r.Answer) == 0 {
+			if r.Rcode != dns.RcodeSuccess {
 				t.Fatalf("Expected successful reply, got %s", dns.RcodeToString[r.Rcode])
 			}
+
+			if len(r.Answer) == 0 {
+				if tt.expectedAddress != "" {
+					t.Fatal("Expected an address but got none")
+				}
+				return
+			}
+
 			expectedAnswer := fmt.Sprintf(`%s	3600	IN	A	%s`, m.Question[0].Name, tt.expectedAddress)
 			if r.Answer[0].String() != expectedAnswer {
 				t.Fatalf("Expected %s reply, got %s", expectedAnswer, r.Answer[0].String())
@@ -300,7 +404,7 @@ func TestIPv6Lookup(t *testing.T) {
 			name:            "A",
 			qtype:           dns.TypeA,
 			subdomain:       "0--1",
-			expectedSuccess: false,
+			expectedSuccess: true,
 			expectedAddress: "",
 		},
 		{
@@ -372,9 +476,17 @@ func TestIPv6Lookup(t *testing.T) {
 				return
 			}
 
-			if r.Rcode != dns.RcodeSuccess || len(r.Answer) == 0 {
+			if r.Rcode != dns.RcodeSuccess {
 				t.Fatalf("Expected successful reply, got %s", dns.RcodeToString[r.Rcode])
 			}
+
+			if len(r.Answer) == 0 {
+				if tt.expectedAddress != "" {
+					t.Fatal("Expected an address but got none")
+				}
+				return
+			}
+
 			expectedAnswer := fmt.Sprintf(`%s	3600	IN	AAAA	%s`, m.Question[0].Name, tt.expectedAddress)
 			if r.Answer[0].String() != expectedAnswer {
 				t.Fatalf("Expected %s reply, got %s", expectedAnswer, r.Answer[0].String())
