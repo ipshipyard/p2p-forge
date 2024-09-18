@@ -200,7 +200,7 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string) error {
 			agentVersion = vs
 		}
 	}
-	log.Debugf("connected to peer %s - UserAgent: %s", p, agentVersion)
+	log.Debugf("connected to peer %s - UserAgent: %q", p, agentVersion)
 	return nil
 }
 
