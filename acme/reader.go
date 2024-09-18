@@ -27,8 +27,9 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 			continue
 		}
 
-		subdomain := strings.TrimSuffix(q.Name, "."+p.ForgeDomain+".")
-		if len(subdomain) == len(q.Name) || len(subdomain) == 0 {
+		normalizedName := strings.ToLower(q.Name)
+		subdomain := strings.TrimSuffix(normalizedName, "."+p.ForgeDomain+".")
+		if len(subdomain) == len(normalizedName) || len(subdomain) == 0 {
 			continue
 		}
 

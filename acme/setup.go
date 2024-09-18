@@ -69,7 +69,7 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 		case 0:
 			return nil, nil, c.ArgErr()
 		case 1:
-			forgeDomain = args[0]
+			forgeDomain = strings.ToLower(args[0])
 		default:
 			return nil, nil, c.ArgErr()
 		}
@@ -82,7 +82,7 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 					return nil, nil, c.ArgErr()
 				}
 
-				forgeRegistrationDomain = args[0]
+				forgeRegistrationDomain = strings.ToLower(args[0])
 				for i := 1; i < len(args); i++ {
 					nextArg := args[i]
 					argKV := strings.Split(nextArg, "=")

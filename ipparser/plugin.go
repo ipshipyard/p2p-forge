@@ -34,7 +34,7 @@ func setup(c *caddy.Controller) error {
 
 	// Add the Plugin to CoreDNS, so Servers can use it in their plugin chain.
 	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
-		return ipParser{Next: next, ForgeDomain: forgeDomain}
+		return ipParser{Next: next, ForgeDomain: strings.ToLower(forgeDomain)}
 	})
 
 	return nil
@@ -52,8 +52,9 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	var answers []dns.RR
 	containsNODATAResponse := false
 	for _, q := range r.Question {
-		subdomain := strings.TrimSuffix(q.Name, "."+p.ForgeDomain+".")
-		if len(subdomain) == len(q.Name) || len(subdomain) == 0 {
+		normalizedName := strings.ToLower(q.Name)
+		subdomain := strings.TrimSuffix(normalizedName, "."+p.ForgeDomain+".")
+		if len(subdomain) == len(normalizedName) || len(subdomain) == 0 {
 			continue
 		}
 
