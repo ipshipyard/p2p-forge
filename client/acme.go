@@ -222,35 +222,35 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
 	}
 
-	if mgrCfg.onCertLoaded != nil {
-		certCfg.OnEvent = func(ctx context.Context, event string, data map[string]any) error {
-			if event == "cached_managed_cert" {
-				sans, ok := data["sans"]
-				if !ok {
-					return nil
-				}
-				sanList, ok := sans.([]string)
-				if !ok {
-					return nil
-				}
-				peerID := hostFn().ID()
-				pidStr := peer.ToCid(peerID).Encode(multibase.MustNewEncoder(multibase.Base36))
-				certName := fmt.Sprintf("*.%s.%s", pidStr, mgrCfg.forgeDomain)
-				for _, san := range sanList {
-					if san == certName {
-						// When the certificate is loaded mark that it has been so we know we are good to use the domain name
-						// TODO: This won't handle if the cert expires and cannot get renewed
-						mgr.certCheckMx.Lock()
-						mgr.hasCert = true
-						mgr.certCheckMx.Unlock()
-						// Execute user function for on certificate load
+	certCfg.OnEvent = func(ctx context.Context, event string, data map[string]any) error {
+		if event == "cached_managed_cert" {
+			sans, ok := data["sans"]
+			if !ok {
+				return nil
+			}
+			sanList, ok := sans.([]string)
+			if !ok {
+				return nil
+			}
+			peerID := hostFn().ID()
+			pidStr := peer.ToCid(peerID).Encode(multibase.MustNewEncoder(multibase.Base36))
+			certName := fmt.Sprintf("*.%s.%s", pidStr, mgrCfg.forgeDomain)
+			for _, san := range sanList {
+				if san == certName {
+					// When the certificate is loaded mark that it has been so we know we are good to use the domain name
+					// TODO: This won't handle if the cert expires and cannot get renewed
+					mgr.certCheckMx.Lock()
+					mgr.hasCert = true
+					mgr.certCheckMx.Unlock()
+					// Execute user function for on certificate load
+					if mgrCfg.onCertLoaded != nil {
 						mgrCfg.onCertLoaded()
 					}
 				}
-				return nil
 			}
 			return nil
 		}
+		return nil
 	}
 
 	return mgr, nil
