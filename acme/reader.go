@@ -22,11 +22,8 @@ const ttl = 1 * time.Hour
 // ServeDNS implements the plugin.Handler interface.
 func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	var answers []dns.RR
+	containsNODATAResponse := false
 	for _, q := range r.Question {
-		if q.Qtype != dns.TypeTXT && q.Qtype != dns.TypeANY {
-			continue
-		}
-
 		normalizedName := strings.ToLower(q.Name)
 		subdomain := strings.TrimSuffix(normalizedName, "."+p.ForgeDomain+".")
 		if len(subdomain) == len(normalizedName) || len(subdomain) == 0 {
@@ -50,8 +47,14 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 			continue
 		}
 
+		if q.Qtype != dns.TypeTXT && q.Qtype != dns.TypeANY {
+			containsNODATAResponse = true
+			continue
+		}
+
 		val, err := p.Datastore.Get(ctx, datastore.NewKey(peerID.String()))
 		if err != nil {
+			containsNODATAResponse = true
 			continue
 		}
 
@@ -66,7 +69,7 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 		})
 	}
 
-	if len(answers) > 0 {
+	if len(answers) > 0 || containsNODATAResponse {
 		var m dns.Msg
 		m.SetReply(r)
 		m.Authoritative = true
