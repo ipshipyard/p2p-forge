@@ -17,6 +17,7 @@ import (
 
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/coredns/coredns/plugin/pkg/reuseport"
+	"github.com/ipshipyard/p2p-forge/client"
 
 	"github.com/caddyserver/certmagic"
 
@@ -31,9 +32,6 @@ import (
 )
 
 var log = clog.NewWithPlugin(pluginName)
-
-const authEnvVar = "FORGE_ACCESS_TOKEN"
-const authForgeHeader = "Forge-Authorization"
 
 // acmeWriter implements writing of ACME Challenge DNS records by exporting an HTTP endpoint.
 type acmeWriter struct {
@@ -79,12 +77,12 @@ func (c *acmeWriter) OnStartup() error {
 		ln = tls.NewListener(ln, tlsConfig)
 	}
 
-	authKey, found := os.LookupEnv(authEnvVar)
+	authKey, found := os.LookupEnv(client.ForgeAuthEnv)
 	if found {
 		c.forgeAuthKey = authKey
 	} else {
 		// TODO: Remove when ready for rollout
-		return fmt.Errorf("environment variable %s not found", authEnvVar)
+		return fmt.Errorf("environment variable %s not found", client.ForgeAuthEnv)
 	}
 
 	c.ln = ln
@@ -102,7 +100,7 @@ func (c *acmeWriter) OnStartup() error {
 		TokenTTL: time.Hour,
 		Next: func(peerID peer.ID, w http.ResponseWriter, r *http.Request) {
 			if c.forgeAuthKey != "" {
-				auth := r.Header.Get(authForgeHeader)
+				auth := r.Header.Get(client.ForgeAuthHeader)
 				if c.forgeAuthKey != auth {
 					w.WriteHeader(http.StatusForbidden)
 					return

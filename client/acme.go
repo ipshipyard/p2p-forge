@@ -27,12 +27,6 @@ import (
 
 var log = logging.Logger("p2p-forge/client")
 
-const (
-	DefaultForgeDomain   = "libp2p.direct"
-	DefaultForgeEndpoint = "https://registration.libp2p.direct"
-	DefaultCAEndpoint    = certmagic.LetsEncryptProductionCA
-)
-
 type P2PForgeCertMgr struct {
 	ctx                        context.Context
 	cancel                     func()
@@ -74,8 +68,10 @@ func isPublicAddr(a multiaddr.Multiaddr) bool {
 type P2PForgeCertMgrConfig struct {
 	forgeDomain                string
 	forgeRegistrationEndpoint  string
+	forgeAuth                  string
 	caEndpoint                 string
 	userEmail                  string
+	userAgent                  string
 	trustedRoots               *x509.CertPool
 	storage                    certmagic.Storage
 	modifyForgeRequest         func(r *http.Request) error
@@ -127,6 +123,32 @@ func WithUserEmail(email string) P2PForgeCertMgrOptions {
 	}
 }
 
+// WithForgeAuth sets optional secret be sent with requests to the forge
+// registration endpoint.
+func WithForgeAuth(forgeAuth string) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.forgeAuth = forgeAuth
+		return nil
+	}
+}
+
+// WithUserAgent sets custom User-Agent sent to the forge.
+func WithUserAgent(userAgent string) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.userAgent = userAgent
+		return nil
+	}
+}
+
+/*
+// WithHTTPClient sets a custom HTTP Client to be used when talking to registration endpoint.
+func WithHTTPClient(h httpClient) error {
+	return func(config *P2PForgeCertMgrConfig) error {
+		return nil
+	}
+}
+*/
+
 // WithModifiedForgeRequest enables modifying how the ACME DNS challenges are sent to the forge, such as to enable
 // custom HTTP headers, etc.
 func WithModifiedForgeRequest(fn func(req *http.Request) error) P2PForgeCertMgrOptions {
@@ -166,7 +188,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	}
 
 	if mgrCfg.forgeDomain == "" {
-		mgrCfg.forgeDomain = "libp2p.direct"
+		mgrCfg.forgeDomain = DefaultForgeDomain
 	}
 	if mgrCfg.caEndpoint == "" {
 		mgrCfg.caEndpoint = DefaultCAEndpoint
@@ -208,8 +230,10 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		Agreed: true,
 		DNS01Solver: &dns01P2PForgeSolver{
 			forge:                      mgrCfg.forgeRegistrationEndpoint,
+			forgeAuth:                  mgrCfg.forgeAuth,
 			hostFn:                     hostFn,
 			modifyForgeRequest:         mgrCfg.modifyForgeRequest,
+			userAgent:                  mgrCfg.userAgent,
 			allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
 		},
 		TrustedRoots: mgrCfg.trustedRoots,
@@ -319,8 +343,10 @@ func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool) config
 
 type dns01P2PForgeSolver struct {
 	forge                      string
+	forgeAuth                  string
 	hostFn                     func() host.Host
 	modifyForgeRequest         func(r *http.Request) error
+	userAgent                  string
 	allowPrivateForgeAddresses bool
 }
 
@@ -355,6 +381,18 @@ func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challe
 	if err != nil {
 		return err
 	}
+
+	// Add forge auth header if set
+	if d.forgeAuth != "" {
+		req.Header.Set(ForgeAuthHeader, d.forgeAuth)
+	}
+
+	// Always include User-Agent header
+	if d.userAgent == "" {
+		d.userAgent = defaultUserAgent
+	}
+	req.Header.Set("User-Agent", d.userAgent)
+
 	if d.modifyForgeRequest != nil {
 		if err := d.modifyForgeRequest(req); err != nil {
 			return err

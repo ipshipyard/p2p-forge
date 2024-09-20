@@ -53,9 +53,9 @@ import (
 const forge = "libp2p.direct"
 const forgeRegistration = "registration.libp2p.direct"
 
-const authEnvVar = "FORGE_ACCESS_TOKEN"
+const authEnvVar = client.ForgeAuthEnv
 const authToken = "testToken"
-const authForgeHeader = "Forge-Authorization"
+const authForgeHeader = client.ForgeAuthHeader
 
 var dnsServerAddress string
 var httpPort int
