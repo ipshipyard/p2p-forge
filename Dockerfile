@@ -56,4 +56,6 @@ VOLUME $P2P_FORGE_PATH
 WORKDIR $P2P_FORGE_PATH
 USER p2pforge
 EXPOSE 53 53/udp
+EXPOSE 443
+EXPOSE 9253
 ENTRYPOINT ["tini", "--", "/usr/local/bin/entrypoint.sh"]

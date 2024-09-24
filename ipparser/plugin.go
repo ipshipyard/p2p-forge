@@ -72,6 +72,7 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		// Need to handle <peerID>.forgeDomain to return NODATA rather than NXDOMAIN per https://datatracker.ietf.org/doc/html/rfc8020
 		if len(domainSegments) == 1 {
 			containsNODATAResponse = true
+			dynamicResponseCount.WithLabelValues("NODATA-PEERID-" + dnsToString(q.Qtype)).Add(1)
 			continue
 		}
 
@@ -87,6 +88,7 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			// Need to handle <ipv4>.<peerID>.forgeDomain to return NODATA rather than NXDOMAIN per https://datatracker.ietf.org/doc/html/rfc8020
 			if !(q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY) {
 				containsNODATAResponse = true
+				dynamicResponseCount.WithLabelValues("NODATA-" + dnsToString(q.Qtype)).Add(1)
 				continue
 			}
 
@@ -99,6 +101,7 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				},
 				A: ip.AsSlice(),
 			})
+			dynamicResponseCount.WithLabelValues("A").Add(1)
 			continue
 		}
 
@@ -115,6 +118,7 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 		if !(q.Qtype == dns.TypeAAAA || q.Qtype == dns.TypeANY) {
 			containsNODATAResponse = true
+			dynamicResponseCount.WithLabelValues("NODATA-" + dnsToString(q.Qtype)).Add(1)
 			continue
 		}
 
@@ -127,6 +131,7 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			},
 			AAAA: ip.AsSlice(),
 		})
+		dynamicResponseCount.WithLabelValues("AAAA").Add(1)
 	}
 
 	if len(answers) > 0 || containsNODATAResponse {

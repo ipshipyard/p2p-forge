@@ -49,12 +49,14 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 
 		if q.Qtype != dns.TypeTXT && q.Qtype != dns.TypeANY {
 			containsNODATAResponse = true
+			dns01ResponseCount.WithLabelValues("NODATA-" + dnsToString(q.Qtype)).Add(1)
 			continue
 		}
 
 		val, err := p.Datastore.Get(ctx, datastore.NewKey(peerID.String()))
 		if err != nil {
 			containsNODATAResponse = true
+			dns01ResponseCount.WithLabelValues("NODATA-TXT").Add(1)
 			continue
 		}
 
@@ -67,6 +69,7 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 			},
 			Txt: []string{string(val)},
 		})
+		dns01ResponseCount.WithLabelValues("TXT").Add(1)
 	}
 
 	if len(answers) > 0 || containsNODATAResponse {

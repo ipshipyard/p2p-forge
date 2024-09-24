@@ -95,6 +95,7 @@ func (c *acmeWriter) OnStartup() error {
 	if err != nil {
 		return err
 	}
+
 	authPeer := &httppeeridauth.ServerPeerIDAuth{
 		PrivKey:  sk,
 		TokenTTL: time.Hour,
@@ -102,14 +103,14 @@ func (c *acmeWriter) OnStartup() error {
 			if c.forgeAuthKey != "" {
 				auth := r.Header.Get(client.ForgeAuthHeader)
 				if c.forgeAuthKey != auth {
-					w.WriteHeader(http.StatusForbidden)
+					writeStatusHeader(w, http.StatusForbidden)
 					return
 				}
 			}
 
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
+				writeStatusHeader(w, http.StatusInternalServerError)
 				_, _ = w.Write([]byte(fmt.Sprintf("error reading body: %s", err)))
 				return
 			}
@@ -118,7 +119,7 @@ func (c *acmeWriter) OnStartup() error {
 			decoder := json.NewDecoder(bytes.NewReader(body))
 			decoder.DisallowUnknownFields()
 			if err := decoder.Decode(typedBody); err != nil {
-				w.WriteHeader(http.StatusBadRequest)
+				writeStatusHeader(w, http.StatusBadRequest)
 				_, _ = w.Write([]byte(fmt.Sprintf("error decoding body: %s", err)))
 				return
 			}
@@ -127,19 +128,19 @@ func (c *acmeWriter) OnStartup() error {
 			// It MUST NOT contain any characters outside the base64url alphabet, including padding characters ("=").
 			decodedValue, err := base64.RawURLEncoding.DecodeString(typedBody.Value)
 			if err != nil {
-				w.WriteHeader(http.StatusBadRequest)
+				writeStatusHeader(w, http.StatusBadRequest)
 				_, _ = w.Write([]byte(fmt.Sprintf("error decoding value as base64url: %s", err)))
 				return
 			}
 
 			if len(decodedValue) != 32 {
-				w.WriteHeader(http.StatusBadRequest)
+				writeStatusHeader(w, http.StatusBadRequest)
 				_, _ = w.Write([]byte("value is not a base64url of a SHA256 digest"))
 				return
 			}
 
 			if err := testAddresses(r.Context(), peerID, typedBody.Addresses); err != nil {
-				w.WriteHeader(http.StatusBadRequest)
+				writeStatusHeader(w, http.StatusBadRequest)
 				_, _ = w.Write([]byte(fmt.Sprintf("error testing addresses: %s", err)))
 				return
 			}
@@ -147,11 +148,11 @@ func (c *acmeWriter) OnStartup() error {
 			const ttl = time.Hour
 			err = c.Datastore.PutWithTTL(r.Context(), datastore.NewKey(peerID.String()), []byte(typedBody.Value), ttl)
 			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
+				writeStatusHeader(w, http.StatusInternalServerError)
 				_, _ = w.Write([]byte(fmt.Sprintf("error storing value: %s", err)))
 				return
 			}
-			w.WriteHeader(http.StatusOK)
+			writeStatusHeader(w, http.StatusOK)
 		},
 	}
 
@@ -169,9 +170,20 @@ func (c *acmeWriter) OnStartup() error {
 	return nil
 }
 
+func writeStatusHeader(w http.ResponseWriter, statusCode int) {
+
+	// TODO registrationRequestCount.WithLabelValues(strconv.Itoa(statusCode)).Add(1)
+	// TODO: make sure registrationRequestCount is updated on invalid requests
+	// correctly. Right now we are unable to detect when libp2p's httppeeridauth.ServerPeerIDAuth
+	// fails, the metric in writeStatusHeader is not being bumped
+
+	w.WriteHeader(statusCode)
+}
+
 func testAddresses(ctx context.Context, p peer.ID, addrs []string) error {
 	h, err := libp2p.New(libp2p.NoListenAddrs, libp2p.DisableRelay())
 	if err != nil {
+		peerProbeCount.WithLabelValues("error", "unknown").Add(1)
 		return err
 	}
 	defer h.Close()
@@ -180,6 +192,7 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string) error {
 	for _, addr := range addrs {
 		ma, err := multiaddr.NewMultiaddr(addr)
 		if err != nil {
+			peerProbeCount.WithLabelValues("error", "unknown").Add(1)
 			return err
 		}
 		mas = append(mas, ma)
@@ -187,6 +200,7 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string) error {
 
 	err = h.Connect(ctx, peer.AddrInfo{ID: p, Addrs: mas})
 	if err != nil {
+		peerProbeCount.WithLabelValues("error", "unknown").Add(1)
 		return err
 	}
 
@@ -199,7 +213,28 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string) error {
 		}
 	}
 	log.Debugf("connected to peer %s - UserAgent: %q", p, agentVersion)
+	peerProbeCount.WithLabelValues("ok", agentType(agentVersion)).Add(1)
 	return nil
+}
+
+// agentType returns bound cardinality agent label for metrics.
+// libp2p clients can set agent version to arbitrary strings,
+// and the metric labels have to have a bound cardinality
+func agentType(agentVersion string) string {
+	if strings.HasPrefix(agentVersion, "kubo/") {
+		return "kubo"
+	}
+	if strings.HasPrefix(agentVersion, "helia/") {
+		return "helia"
+	}
+	// TODO:  revisit once js0libp2p cleans up default user agents to something unique and not "libp2p/"
+	if strings.HasPrefix(agentVersion, "libp2p/") || strings.HasPrefix(agentVersion, "js-libp2p/") {
+		return "js-libp2p"
+	}
+	if strings.Contains(agentVersion, "go-libp2p") {
+		return "go-libp2p"
+	}
+	return "other"
 }
 
 type requestBody struct {
