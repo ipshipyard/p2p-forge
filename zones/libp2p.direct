@@ -1,0 +1,42 @@
+$TTL 300
+$ORIGIN libp2p.direct.
+
+;; SOA Records
+@                               86400   IN      SOA     ns1.libp2p.direct. domains.ipshipyard.com. (
+                                                        2024091702  ; serial
+                                                        86400       ; refresh
+                                                        2400        ; retry
+                                                        604800      ; expire
+                                                        300         ; minimum
+                                                        )
+
+;; DNS Service
+libp2p.direct.                  86400   IN      NS      ns1.libp2p.direct.
+libp2p.direct.                  86400   IN      NS      ns2.libp2p.direct.
+libp2p.direct.                  86400   IN      NS      ns1.p2p-forge.dwebops.net.
+libp2p.direct.                  86400   IN      NS      ns2.p2p-forge.dwebops.net.
+
+ns1.libp2p.direct.              86400   IN      A       40.160.8.207
+;ns1.p2p-forge.dwebops.net.     86400   IN      AAAA    2604:2dc0:101:100::265
+
+ns2.libp2p.direct.              86400   IN      A       15.204.28.76
+;ns2.p2p-forge.dwebops.net.     86400   IN      AAAA    2604:2dc0:202:200::64e
+
+;; TLS Provider
+libp2p.direct.				                  IN	    CAA	    0 issue "letsencrypt.org"
+
+;; HTTP Service
+libp2p.direct.                  3600    IN      A       40.160.8.207
+registration.libp2p.direct.     3600    IN      A       40.160.8.207
+
+;; PSL Records
+_psl.libp2p.direct.             86400   IN      TXT     "https://github.com/publicsuffix/list/pull/2084"
+_psl.libp2p.direct.             86400   IN      TXT     "https://github.com/publicsuffix/list/pull/2105"
+
+;; Email blocking
+libp2p.direct.                  86400   IN      MX      0 .
+libp2p.direct.                  86400   IN      TXT     "v=spf1 -all"
+_dmarc.libp2p.direct.           86400   IN      TXT     "v=DMARC1;p=reject;sp=reject;adkim=s;aspf=s"
+*._domainkey.libp2p.direct.     86400   IN      TXT     "v=DKIM1; p="
+
+; vim: ts=2 sw=2 et :
