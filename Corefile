@@ -1,0 +1,8 @@
+libp2p.direct {
+    log
+    errors
+    any # RFC 8482
+    prometheus localhost:9253
+    ipparser libp2p.direct
+    file zones/libp2p.direct
+}
