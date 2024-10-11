@@ -12,16 +12,16 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/coredns/coredns/plugin/pkg/reuseport"
+	"github.com/felixge/httpsnoop"
 	"github.com/ipshipyard/p2p-forge/client"
 
 	"github.com/caddyserver/certmagic"
-
-	"github.com/gorilla/mux"
 
 	"github.com/ipfs/go-datastore"
 	"github.com/libp2p/go-libp2p"
@@ -32,6 +32,8 @@ import (
 )
 
 var log = clog.NewWithPlugin(pluginName)
+
+const registrationApiPath = "/v1/_acme-challenge"
 
 // acmeWriter implements writing of ACME Challenge DNS records by exporting an HTTP endpoint.
 type acmeWriter struct {
@@ -44,7 +46,8 @@ type acmeWriter struct {
 	ln           net.Listener
 	nlSetup      bool
 	closeCertMgr func()
-	mux          *mux.Router
+
+	handler http.Handler
 
 	forgeAuthKey string
 }
@@ -87,7 +90,7 @@ func (c *acmeWriter) OnStartup() error {
 
 	c.ln = ln
 
-	c.mux = mux.NewRouter()
+	mux := http.NewServeMux()
 	c.nlSetup = true
 
 	// server side secret key and peerID not particularly relevant, so we can generate new ones as needed
@@ -100,17 +103,23 @@ func (c *acmeWriter) OnStartup() error {
 		PrivKey:  sk,
 		TokenTTL: time.Hour,
 		Next: func(peerID peer.ID, w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprintln(w, "400 Bad Request: Only POST method is allowed.")
+				return
+			}
 			if c.forgeAuthKey != "" {
 				auth := r.Header.Get(client.ForgeAuthHeader)
 				if c.forgeAuthKey != auth {
-					writeStatusHeader(w, http.StatusForbidden)
+					w.WriteHeader(http.StatusForbidden)
+					fmt.Fprintf(w, "403 Forbidden: Missing %s header.", client.ForgeAuthHeader)
 					return
 				}
 			}
 
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
-				writeStatusHeader(w, http.StatusInternalServerError)
+				w.WriteHeader(http.StatusInternalServerError)
 				_, _ = w.Write([]byte(fmt.Sprintf("error reading body: %s", err)))
 				return
 			}
@@ -119,7 +128,7 @@ func (c *acmeWriter) OnStartup() error {
 			decoder := json.NewDecoder(bytes.NewReader(body))
 			decoder.DisallowUnknownFields()
 			if err := decoder.Decode(typedBody); err != nil {
-				writeStatusHeader(w, http.StatusBadRequest)
+				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(fmt.Sprintf("error decoding body: %s", err)))
 				return
 			}
@@ -128,19 +137,19 @@ func (c *acmeWriter) OnStartup() error {
 			// It MUST NOT contain any characters outside the base64url alphabet, including padding characters ("=").
 			decodedValue, err := base64.RawURLEncoding.DecodeString(typedBody.Value)
 			if err != nil {
-				writeStatusHeader(w, http.StatusBadRequest)
+				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(fmt.Sprintf("error decoding value as base64url: %s", err)))
 				return
 			}
 
 			if len(decodedValue) != 32 {
-				writeStatusHeader(w, http.StatusBadRequest)
+				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte("value is not a base64url of a SHA256 digest"))
 				return
 			}
 
 			if err := testAddresses(r.Context(), peerID, typedBody.Addresses); err != nil {
-				writeStatusHeader(w, http.StatusBadRequest)
+				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(fmt.Sprintf("error testing addresses: %s", err)))
 				return
 			}
@@ -148,11 +157,11 @@ func (c *acmeWriter) OnStartup() error {
 			const ttl = time.Hour
 			err = c.Datastore.PutWithTTL(r.Context(), datastore.NewKey(peerID.String()), []byte(typedBody.Value), ttl)
 			if err != nil {
-				writeStatusHeader(w, http.StatusInternalServerError)
+				w.WriteHeader(http.StatusInternalServerError)
 				_, _ = w.Write([]byte(fmt.Sprintf("error storing value: %s", err)))
 				return
 			}
-			writeStatusHeader(w, http.StatusOK)
+			w.WriteHeader(http.StatusOK)
 		},
 	}
 
@@ -163,21 +172,27 @@ func (c *acmeWriter) OnStartup() error {
 		}
 	}
 
-	c.mux.Handle("/v1/_acme-challenge", authPeer).Methods("POST")
+	// register handlers
+	mux.Handle(registrationApiPath, authPeer)
 
-	go func() { http.Serve(c.ln, c.mux) }()
+	// wrap handler in metrics meter
+	c.handler = withRequestMetrics(mux)
+
+	go func() {
+		log.Infof("Registration HTTP API (%s) listener at %s", registrationApiPath, c.ln.Addr().String())
+		http.Serve(c.ln, c.handler)
+	}()
 
 	return nil
 }
 
-func writeStatusHeader(w http.ResponseWriter, statusCode int) {
-
-	// TODO registrationRequestCount.WithLabelValues(strconv.Itoa(statusCode)).Add(1)
-	// TODO: make sure registrationRequestCount is updated on invalid requests
-	// correctly. Right now we are unable to detect when libp2p's httppeeridauth.ServerPeerIDAuth
-	// fails, the metric in writeStatusHeader is not being bumped
-
-	w.WriteHeader(statusCode)
+func withRequestMetrics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m := httpsnoop.CaptureMetrics(next, w, r)
+		registrationRequestCount.WithLabelValues(strconv.Itoa(m.Code)).Add(1)
+		// TODO: decide if we keep below logger
+		log.Infof("%s %s (status=%d dt=%s ua=%q)", r.Method, r.URL, m.Code, m.Duration, r.UserAgent())
+	})
 }
 
 func testAddresses(ctx context.Context, p peer.ID, addrs []string) error {
