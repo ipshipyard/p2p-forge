@@ -2,3 +2,5 @@ cmd/db.*
 cmd/Corefile
 cmd/cmd
 p2p-forge
+p2p-forge-certs/
+badger.libp2p-direct-challenges/

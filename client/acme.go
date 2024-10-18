@@ -12,6 +12,7 @@ import (
 	"time"
 
 	httppeeridauth "github.com/libp2p/go-libp2p/p2p/http/auth"
+	"go.uber.org/zap"
 
 	"github.com/caddyserver/certmagic"
 	logging "github.com/ipfs/go-log/v2"
@@ -25,8 +26,6 @@ import (
 	"github.com/multiformats/go-multibase"
 )
 
-var log = logging.Logger("p2p-forge/client")
-
 type P2PForgeCertMgr struct {
 	ctx                        context.Context
 	cancel                     func()
@@ -36,6 +35,7 @@ type P2PForgeCertMgr struct {
 	hostFn                     func() host.Host
 	hasHost                    func() bool
 	cfg                        *certmagic.Config
+	log                        *zap.SugaredLogger
 	allowPrivateForgeAddresses bool
 
 	hasCert     bool // tracking if we've received a certificate
@@ -76,6 +76,7 @@ type P2PForgeCertMgrConfig struct {
 	storage                    certmagic.Storage
 	modifyForgeRequest         func(r *http.Request) error
 	onCertLoaded               func()
+	log                        *zap.SugaredLogger
 	allowPrivateForgeAddresses bool
 }
 
@@ -174,6 +175,13 @@ func WithAllowPrivateForgeAddrs() P2PForgeCertMgrOptions {
 	}
 }
 
+func WithLogger(log *zap.SugaredLogger) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.log = log
+		return nil
+	}
+}
+
 // NewP2PForgeCertMgr handles the creation and management of certificates that are automatically granted by a forge
 // to a libp2p host.
 //
@@ -187,6 +195,9 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		}
 	}
 
+	if mgrCfg.log == nil {
+		mgrCfg.log = logging.Logger("p2p-forge/client").Desugar().Sugar()
+	}
 	if mgrCfg.forgeDomain == "" {
 		mgrCfg.forgeDomain = DefaultForgeDomain
 	}
@@ -208,6 +219,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 
 	certCfg := certmagic.NewDefault()
 	certCfg.Storage = mgrCfg.storage
+	certCfg.Logger = mgrCfg.log.Desugar()
 	hostChan := make(chan host.Host, 1)
 	provideHost := func(host host.Host) { hostChan <- host }
 	hasHostChan := make(chan struct{})
@@ -247,6 +259,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		hostFn:                     hostFn,
 		hasHost:                    hasHostFn,
 		cfg:                        certCfg,
+		log:                        mgrCfg.log,
 		allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
 	}
 
@@ -290,7 +303,7 @@ func (m *P2PForgeCertMgr) Start() error {
 		pb36 := peer.ToCid(m.hostFn().ID()).Encode(multibase.MustNewEncoder(multibase.Base36))
 
 		if err := m.cfg.ManageAsync(m.ctx, []string{fmt.Sprintf("*.%s.%s", pb36, m.forgeDomain)}); err != nil {
-			log.Error(err)
+			m.log.Error(err)
 		}
 	}()
 	return nil
@@ -337,7 +350,7 @@ func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool) config
 		}
 		m.certCheckMx.RUnlock()
 
-		return addrFactoryFn(skipForgeAddrs, func() peer.ID { return m.hostFn().ID() }, m.forgeDomain, allowPrivateForgeAddrs, p2pForgeWssComponent, multiaddrs)
+		return addrFactoryFn(skipForgeAddrs, func() peer.ID { return m.hostFn().ID() }, m.forgeDomain, allowPrivateForgeAddrs, p2pForgeWssComponent, multiaddrs, m.log)
 	}
 }
 
@@ -419,7 +432,7 @@ func (d *dns01P2PForgeSolver) CleanUp(ctx context.Context, challenge acme.Challe
 var _ acmez.Solver = (*dns01P2PForgeSolver)(nil)
 var _ acmez.Waiter = (*dns01P2PForgeSolver)(nil)
 
-func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain string, allowPrivateForgeAddrs bool, p2pForgeWssComponent multiaddr.Multiaddr, multiaddrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
+func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain string, allowPrivateForgeAddrs bool, p2pForgeWssComponent multiaddr.Multiaddr, multiaddrs []multiaddr.Multiaddr, log *zap.SugaredLogger) []multiaddr.Multiaddr {
 	retAddrs := make([]multiaddr.Multiaddr, 0, len(multiaddrs))
 	for _, a := range multiaddrs {
 		if isRelayAddr(a) {
