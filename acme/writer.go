@@ -84,8 +84,7 @@ func (c *acmeWriter) OnStartup() error {
 	if found {
 		c.forgeAuthKey = authKey
 	} else {
-		// TODO: Remove when ready for rollout
-		return fmt.Errorf("environment variable %s not found", client.ForgeAuthEnv)
+		fmt.Println("NOTE: environment variable %s not set, registration is open to all peers", client.ForgeAuthEnv)
 	}
 
 	c.ln = ln
