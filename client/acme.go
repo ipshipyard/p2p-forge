@@ -42,6 +42,11 @@ type P2PForgeCertMgr struct {
 	certCheckMx sync.RWMutex
 }
 
+var (
+	defaultCertCache   *certmagic.Cache
+	defaultCertCacheMu sync.Mutex
+)
+
 func isRelayAddr(a multiaddr.Multiaddr) bool {
 	found := false
 	multiaddr.ForEach(a, func(c multiaddr.Component) bool {
@@ -182,6 +187,35 @@ func WithLogger(log *zap.SugaredLogger) P2PForgeCertMgrOptions {
 	}
 }
 
+// newCertmagicConfig is p2p-forge/client-specific version of
+// certmagic.NewDefault() that ensures we have our own cert cache. This is
+// necessary to ensure cert maintenance spawned by NewCache does not share
+// global certmagic.Default.Storage, and certmagic.Default.Logger and uses
+// storage path specific to p2p-forge, and no other instance of certmagic in
+// golang application.
+func newCertmagicConfig(mgrCfg *P2PForgeCertMgrConfig) *certmagic.Config {
+	clog := mgrCfg.log.Desugar()
+
+	defaultCertCacheMu.Lock()
+	if defaultCertCache == nil {
+		defaultCertCache = certmagic.NewCache(certmagic.CacheOptions{
+			GetConfigForCert: func(certmagic.Certificate) (*certmagic.Config, error) {
+				// default getter that does not depend on certmagic defaults
+				// and respects Config.Storage path
+				return newCertmagicConfig(mgrCfg), nil
+			},
+			Logger: clog,
+		})
+	}
+	certCache := defaultCertCache
+	defaultCertCacheMu.Unlock()
+
+	return certmagic.New(certCache, certmagic.Config{
+		Storage: mgrCfg.storage,
+		Logger:  clog,
+	})
+}
+
 // NewP2PForgeCertMgr handles the creation and management of certificates that are automatically granted by a forge
 // to a libp2p host.
 //
@@ -217,9 +251,8 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		mgrCfg.storage = &certmagic.FileStorage{Path: defaultStorageLocation}
 	}
 
-	certCfg := certmagic.NewDefault()
-	certCfg.Storage = mgrCfg.storage
-	certCfg.Logger = mgrCfg.log.Desugar()
+	certCfg := newCertmagicConfig(mgrCfg)
+
 	hostChan := make(chan host.Host, 1)
 	provideHost := func(host host.Host) { hostChan <- host }
 	hasHostChan := make(chan struct{})
@@ -249,7 +282,9 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 			allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
 		},
 		TrustedRoots: mgrCfg.trustedRoots,
+		Logger:       certCfg.Logger,
 	})
+
 	certCfg.Issuers = []certmagic.Issuer{myACME}
 
 	mgr := &P2PForgeCertMgr{
