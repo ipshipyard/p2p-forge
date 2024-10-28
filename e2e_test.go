@@ -30,6 +30,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	httppeeridauth "github.com/libp2p/go-libp2p/p2p/http/auth"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	libp2pwebrtc "github.com/libp2p/go-libp2p/p2p/transport/webrtc"
@@ -600,7 +601,7 @@ func TestLibp2pACMEE2E(t *testing.T) {
 	}
 
 	h2, err := libp2p.New(libp2p.Transport(libp2pws.New, libp2pws.WithTLSClientConfig(tlsCfgWithTestCA)),
-		libp2p.MultiaddrResolver(customResolver))
+		libp2p.MultiaddrResolver(swarm.ResolverFromMaDNS{Resolver: customResolver}))
 	if err != nil {
 		t.Fatal(err)
 	}
