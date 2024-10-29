@@ -218,7 +218,6 @@ func TestIPSubdomainsNonExistentRecords(t *testing.T) {
 			if len(r.Answer) != 0 {
 				t.Fatalf("expected no answers got %+v", r.Answer)
 			}
-			return
 		})
 	}
 }
