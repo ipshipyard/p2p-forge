@@ -1,6 +1,8 @@
 # p2p-forge
 
-> An Authoritative DNS server for distributing DNS subdomains to libp2p peers
+> An Authoritative DNS server for distributing DNS subdomains to libp2p peers.
+> 
+> This is the backend of [`AutoTLS` feature introduced in Kubo 0.32.0-rc1](https://github.com/ipfs/kubo/blob/master/docs/config.md#autotls).
 
 ## Build
 
