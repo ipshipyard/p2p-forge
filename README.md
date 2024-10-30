@@ -130,13 +130,13 @@ To claim a domain name like `<peerID>.libp2p.direct` requires:
 
 To set an ACME challenge send an HTTP request to the server (for libp2p.direct this is registration.libp2p.direct)
 ```shell
-curl -X POST "https://registration.libp2p.direct/v1/<peerID>/_acme-challenge" \
+curl -X POST "https://registration.libp2p.direct/v1/_acme-challenge" \
 -H "Authorization: libp2p-PeerID bearer=\"<base64-encoded-opaque-blob>\""
 -H "Content-Type: application/json" \
 -d '{
   "value": "your_acme_challenge_token",
-  "addresses": "[your_multiaddrs, comma_separated]"
+  "addresses": ["your", "multiaddrs"]
 }'
 ```
 
-Where the bearer token is derived via the [libp2p HTTP PeerID Auth Specification](https://github.com/libp2p/specs/pull/564).
+Where the bearer token is derived via the [libp2p HTTP PeerID Auth Specification](https://github.com/libp2p/specs/blob/master/http/peer-id-auth.md).
