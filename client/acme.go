@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"github.com/libp2p/go-libp2p/core/network"
 	"io"
 	"net/http"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/caddyserver/certmagic"
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p/config"
+	"github.com/libp2p/go-libp2p/core/event"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/mholt/acmez/v2"
@@ -407,6 +409,25 @@ func (d *dns01P2PForgeSolver) Wait(ctx context.Context, challenge acme.Challenge
 func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challenge) error {
 	h := d.hostFn()
 	addrs := h.Addrs()
+
+	if !d.allowPrivateForgeAddresses {
+		sub, err := h.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
+		if err != nil {
+			return err
+		}
+
+		defer sub.Close()
+		select {
+		case e := <-sub.Out():
+			evt := e.(event.EvtLocalReachabilityChanged) // guaranteed safe
+			if evt.Reachability != network.ReachabilityPublic {
+				return fmt.Errorf("reachability status is not yet public, but is %s", evt.Reachability)
+			}
+		case <-ctx.Done():
+			return fmt.Errorf("reachability status has not yet been discovered: %w", ctx.Err())
+		}
+	}
+
 	var advertisedAddrs []multiaddr.Multiaddr
 
 	if !d.allowPrivateForgeAddresses {
