@@ -4,6 +4,50 @@
 > 
 > This is the backend of [`AutoTLS` feature introduced in Kubo 0.32.0-rc1](https://github.com/ipfs/kubo/blob/master/docs/config.md#autotls).
 
+## High-level Design
+
+The following diagrams show the high-level design of how p2p-forge works.
+
+### Peer Authentication and DNS-01 Challenge and Certificate Issuance
+
+```mermaid
+sequenceDiagram
+    participant Client as Kubo node
+    participant LE as Let's Encrypt Server
+    participant AutoTLS as AutoTLS (p2p-forge)
+    participant DNS as libp2p.direct DNS Server
+
+    Client->>LE: Request Certificate
+    LE-->>Client: Respond with DNS-01 Challenge
+
+    Client->>AutoTLS: Authenticate as PeerID over HTTP with multiaddresses
+    AutoTLS->>Client: Test public reachability
+
+    AutoTLS->>DNS: Add Domain Validation TXT Record for `<PeerID>.libp2p.direct`
+    DNS-->>Client: TXT Record Added
+
+    Client->>LE: Notify Challenge Completion
+    LE->>DNS: Validate DNS-01 Challenge
+    DNS-->>LE: Return TXT Record
+
+    LE-->>Client: Certificate for *.<PeerID>.libp2p.direct issued
+```
+
+### DNS Resolution
+
+```mermaid
+sequenceDiagram
+    participant Browser as Client
+    participant DNS as libp2p.direct DNS Server
+    participant Kubo as Kubo (IP: 1.2.3.4)
+
+    Browser-->>DNS: DNS Query: 1-2-3-4.<peerID>.libp2p.direct
+    DNS-->>Browser: 1.2.3.4
+
+    Browser->>Kubo: Connect to 1.2.3.4 with SNI 1-2-3-4.<peerID>.libp2p.direct
+```
+
+
 ## Build
 
 `go build` will build the `p2p-forge` binary in your local directory
