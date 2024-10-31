@@ -1,8 +1,11 @@
 # p2p-forge
 
+
 > An Authoritative DNS server for distributing DNS subdomains to libp2p peers.
-> 
-> This is the backend of [`AutoTLS` feature introduced in Kubo 0.32.0-rc1](https://github.com/ipfs/kubo/blob/master/docs/config.md#autotls).
+
+<a href="http://ipshipyard.com/"><img align="right" src="https://github.com/user-attachments/assets/39ed3504-bb71-47f6-9bf8-cb9a1698f272" /></a>
+This is the backend of [`AutoTLS` feature introduced in Kubo 0.32.0-rc1](https://github.com/ipfs/kubo/blob/master/docs/config.md#autotls).  
+It is deployed at `libp2p.direct` and maintained by [Interplanetary Shipyard](https://github.com/ipshipyard).
 
 ## High-level Design
 
@@ -12,41 +15,47 @@ The following diagrams show the high-level design of how p2p-forge works.
 
 ```mermaid
 sequenceDiagram
-    participant Client as Kubo node
-    participant LE as Let's Encrypt Server
-    participant AutoTLS as AutoTLS (p2p-forge)
-    participant DNS as libp2p.direct DNS Server
+    participant Client as Kubo (IPFS node)
+    participant LE as Let's Encrypt (ACME Server)
+    participant Registration as registration.libp2p.direct (p2p-forge/acme)
+    participant DNS as libp2p.direct DNS (p2p-forge/acme)
 
     Client->>LE: Request Certificate
     LE-->>Client: Respond with DNS-01 Challenge
 
-    Client->>AutoTLS: Authenticate as PeerID over HTTP with multiaddresses
-    AutoTLS->>Client: Test public reachability
+    Client->>Registration: Authenticate as PeerID over HTTP and share Multiaddrs and DNS-01 value
+    Registration->>Client: Test public reachability of PeerID and Multiaddrs
 
-    AutoTLS->>DNS: Add Domain Validation TXT Record for `<PeerID>.libp2p.direct`
-    DNS-->>Client: TXT Record Added
+    Registration->>DNS: Add Domain Validation DNS-01 TXT Record for <PeerID>.libp2p.direct
+    DNS-->>Client: DNS-01 TXT Record Added at _acme-challenge.<PeerID>.libp2p.direct
 
-    Client->>LE: Notify Challenge Completion
+    Client->>LE: Notify DNS-01 Challenge Completion
     LE->>DNS: Validate DNS-01 Challenge
-    DNS-->>LE: Return TXT Record
+    DNS-->>LE: Return TXT Record from _acme-challenge.<PeerID>.libp2p.direct
 
     LE-->>Client: Certificate for *.<PeerID>.libp2p.direct issued
 ```
 
-### DNS Resolution
+- DNS TXT record at `_acme-challenge.<peerid>.libp2p.direct` is part of [ACME DNS-01 Challenge](https://letsencrypt.org/docs/challenge-types/#dns-01-challenge)
+- HTTP API at `/v1/_acme-challenge`  is provided by [p2p-forge/acme](https://github.com/ipshipyard/p2p-forge/tree/main/acme) and requires [libp2p node and a valid PeerID](https://docs.libp2p.io/concepts/fundamentals/peers/) to pass PeerID auth and libp2p connectivity challenge.
+- Golang client for this entire flow is provided in [p2p-forge/client](https://github.com/ipshipyard/p2p-forge/tree/main/client)
+
+### DNS Resolution and TLS Connection
 
 ```mermaid
 sequenceDiagram
-    participant Browser as Client
-    participant DNS as libp2p.direct DNS Server
+    participant Browser as Client (Web Browser)
+    participant DNS as libp2p.direct DNS NS (p2p-forge/ipparser)
     participant Kubo as Kubo (IP: 1.2.3.4)
 
-    Browser-->>DNS: DNS Query: 1-2-3-4.<peerID>.libp2p.direct
+    Browser-->>DNS: DNS Query: 1-2-3-4.<PeerID>.libp2p.direct
     DNS-->>Browser: 1.2.3.4
 
-    Browser->>Kubo: Connect to 1.2.3.4 with SNI 1-2-3-4.<peerID>.libp2p.direct
+    Browser->>Kubo: TLS Connect to 1.2.3.4 with SNI 1-2-3-4.<PeerID>.libp2p.direct
 ```
 
+- DNS A/AAA responses for `*.<PeerID>.libp2p.direct` are  handled by [p2p-forge/ipparser](https://github.com/ipshipyard/p2p-forge/tree/main/ipparser)
+- TLS with [SNI](https://en.wikipedia.org/wiki/Server_Name_Indication) is how web browsers establish [libp2p WebSockets transport](https://github.com/libp2p/specs/blob/master/websockets/README.md) connection
 
 ## Build
 
@@ -68,11 +77,27 @@ Will download using go mod, build and install the binary in your global Go binar
 
 ### Local testing
 
-Build and run on custom port:
+Build and run a custom Corefile configuration and on custom port:
 
 ```console
-$ ./p2p-forge -dns.port 5353
-$ docker build -t p2p-forge . && docker run --rm -it --net=host p2p-forge -dns.port 5353
+$ ./p2p-forge -conf Corefile.example -dns.port 5353
+```
+
+Test with `dig`:
+
+```console
+$ dig A 1-2-3-4.k51qzi5uqu5dlwfht6wwy7lp4z35bgytksvp5sg53fdhcocmirjepowgifkxqd.libp2p.direct @localhost -p 5353
+1.2.3.4
+```
+
+### Docker
+
+Prebuilt images for `main` and `staging` branches are provided at https://github.com/ipshipyard/p2p-forge/pkgs/container/p2p-forge
+
+Docker image ships without `/p2p-forge/Corefile` and `/p2p-forge/zones`, and you need to pass your own:
+
+```console
+$ docker build -t p2p-forge . && docker run --rm -it --net=host -v ./Corefile:/p2p-forge/Corefile.example -v ./zones:/p2p-forge/zones p2p-forge -conf /p2p-forge/Corefile.example -dns.port 5353
 ```
 
 Test with `dig`:

@@ -42,20 +42,13 @@ ENV P2P_FORGE_PATH="/p2p-forge"
 COPY --from=builder $GOPATH/bin/p2p-forge /usr/local/bin/p2p-forge
 COPY --from=builder $SRC_PATH/.github/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# TODO: for now we bundle configuration, but can be customized by
-# mounting custom files on top of ones from image
-COPY --from=builder $SRC_PATH/Corefile $P2P_FORGE_PATH/Corefile
-COPY --from=builder $SRC_PATH/zones $P2P_FORGE_PATH/zones
-
 RUN mkdir -p $P2P_FORGE_PATH && \
   useradd -d $P2P_FORGE_PATH -u 1000 -G users p2pforge && \
   chown p2pforge:users $P2P_FORGE_PATH && \
   setcap cap_net_bind_service=+ep /usr/local/bin/p2p-forge
 
-VOLUME $P2P_FORGE_PATH
 WORKDIR $P2P_FORGE_PATH
 USER p2pforge
 EXPOSE 53 53/udp
-EXPOSE 443
 EXPOSE 9253
 ENTRYPOINT ["tini", "--", "/usr/local/bin/entrypoint.sh"]
