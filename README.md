@@ -1,7 +1,7 @@
 # p2p-forge
 
 
-> An Authoritative DNS server for distributing DNS subdomains to libp2p peers.
+> An Authoritative DNS server and API for distributing DNS subdomains with CA-signed TLS certificates to libp2p peers.
 
 <a href="http://ipshipyard.com/"><img align="right" src="https://github.com/user-attachments/assets/39ed3504-bb71-47f6-9bf8-cb9a1698f272" /></a>
 This is the backend of [`AutoTLS` feature introduced in Kubo 0.32.0-rc1](https://github.com/ipfs/kubo/blob/master/docs/config.md#autotls).  
@@ -15,7 +15,7 @@ The following diagrams show the high-level design of how p2p-forge works.
 
 ```mermaid
 sequenceDiagram
-    participant Client as Kubo (IPFS node)
+    participant Client as Kubo (libp2p peer)
     participant LE as Let's Encrypt (ACME Server)
     participant Registration as registration.libp2p.direct (p2p-forge/acme)
     participant DNS as libp2p.direct DNS (p2p-forge/acme)
