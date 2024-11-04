@@ -1,0 +1,5 @@
+Corefile
+zones
+p2p-forge
+p2p-forge-certs/
+badger.libp2p-direct-challenges/
