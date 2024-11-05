@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -313,11 +314,10 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 			if !ok {
 				return nil
 			}
-			peerID := hostFn().ID()
-			pidStr := peer.ToCid(peerID).Encode(multibase.MustNewEncoder(multibase.Base36))
-			certName := fmt.Sprintf("*.%s.%s", pidStr, mgrCfg.forgeDomain)
+
+			name := certName(hostFn().ID(), mgrCfg.forgeDomain)
 			for _, san := range sanList {
-				if san == certName {
+				if san == name {
 					// When the certificate is loaded mark that it has been so we know we are good to use the domain name
 					// TODO: This won't handle if the cert expires and cannot get renewed
 					mgr.certCheckMx.Lock()
@@ -338,64 +338,70 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 }
 
 func (m *P2PForgeCertMgr) Start() error {
+	if m.cfg == nil || m.hostFn == nil {
+		return errors.New("unable to start without a certmagic and libp2p host")
+	}
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	go func() {
-		// Infer the Common Name of managed TLS certificate
+		log := m.log.Named("start")
 		h := m.hostFn()
-		pb36 := peer.ToCid(h.ID()).Encode(multibase.MustNewEncoder(multibase.Base36))
-		peerDomain := fmt.Sprintf("*.%s.%s", pb36, m.forgeDomain)
-		managedNames := []string{peerDomain}
+		name := certName(h.ID(), m.forgeDomain)
+		certExists := localCertExists(m.ctx, m.cfg, name)
+		startCertManagement := func() {
+			if err := m.cfg.ManageAsync(m.ctx, []string{name}); err != nil {
+				log.Error(err)
+			}
+		}
+
+		if certExists {
+			log.Infof("found preexisting cert for %q in local storage", name)
+		} else {
+			log.Infof("no cert found for %q", name)
+		}
 
 		// Start immediatelly if either:
 		// (A) preexisting certificate is found in certmagic storage
 		// (B) allowPrivateForgeAddresses flag is set
-		acmeIssuer := m.cfg.Issuers[0].(*certmagic.ACMEIssuer)
-		certKey := certmagic.StorageKeys.SiteCert(acmeIssuer.IssuerKey(), peerDomain)
-		hasCert := m.cfg.Storage.Exists(m.ctx, certKey)
-		if hasCert {
-			m.log.Infof("found preexisting cert for %q in local storage", peerDomain)
+		if certExists || m.allowPrivateForgeAddresses {
+			startCertManagement()
 		} else {
-			m.log.Infof("no cert found for %q", peerDomain)
+			// No preexisting cert found.
+			// We will get a new one, but don't want to ask for one
+			// if our node is not publicly diallable.
+			// To avoid ERROR(s) in log and unnecessary retries we wait for libp2p
+			// confirmation that node is publicly reachable before sending
+			// multiaddrs to p2p-forge's registration endpoint.
+			withHostConnectivity(m.ctx, log, h, startCertManagement)
 		}
-		if hasCert || m.allowPrivateForgeAddresses {
-			if err := m.cfg.ManageAsync(m.ctx, managedNames); err != nil {
-				m.log.Error(err)
-			}
-			return
-		}
-
-		// No TLS cert found, we need a new one, but don't want to ask for one
-		// if our node is not publicly diallable.
-		// To avoid ERROR(s) in log and unnecessary retries we wait for libp2p
-		// confirmation that node is publicly reachable before sending
-		// multiaddrs to p2p-forge's registration endpoint.
-		m.log.Infof("waiting until libp2p reports event network.ReachabilityPublic")
-		sub, err := h.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
-		if err != nil {
-			m.log.Error(err)
-			return
-		}
-
-		defer sub.Close()
-		select {
-		case e := <-sub.Out():
-			evt := e.(event.EvtLocalReachabilityChanged) // guaranteed safe
-			m.log.Infof("libp2p reachability status changed to %s", evt.Reachability)
-			if evt.Reachability == network.ReachabilityPublic {
-				if err := m.cfg.ManageAsync(m.ctx, managedNames); err != nil {
-					m.log.Error(err)
-				}
-				return
-			}
-		case <-m.ctx.Done():
-			if m.ctx.Err() != context.Canceled {
-				m.log.Error(fmt.Errorf("aborted while waiting for libp2p reachability status discovery: %w", m.ctx.Err()))
-			}
-			return
-		}
-
 	}()
 	return nil
+}
+
+// withHostConnectivity executes callback func only after certain libp2p connectivity checks / criteria against passed host are fullfilled.
+// The main purpose is to not bother CA ACME endpoint or p2p-forge registration endpoint if we know the peer is not
+// ready to use TLS cert.
+func withHostConnectivity(ctx context.Context, log *zap.SugaredLogger, h host.Host, callback func()) {
+	log.Infof("waiting until libp2p reports event network.ReachabilityPublic")
+	sub, err := h.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
+	if err != nil {
+		log.Error(err)
+		return
+	}
+	defer sub.Close()
+	select {
+	case e := <-sub.Out():
+		evt := e.(event.EvtLocalReachabilityChanged) // guaranteed safe
+		log.Infof("libp2p reachability status changed to %s", evt.Reachability)
+		if evt.Reachability == network.ReachabilityPublic {
+			callback()
+			return
+		}
+	case <-ctx.Done():
+		if ctx.Err() != context.Canceled {
+			log.Error(fmt.Errorf("aborted while waiting for libp2p reachability status discovery: %w", ctx.Err()))
+		}
+		return
+	}
 }
 
 func (m *P2PForgeCertMgr) Stop() {
@@ -423,6 +429,22 @@ func (m *P2PForgeCertMgr) AddressFactory() config.AddrsFactory {
 	tlsCfg.NextProtos = []string{"h2", "http/1.1"} // remove the ACME ALPN and set the HTTP 1.1 and 2 ALPNs
 
 	return m.createAddrsFactory(m.allowPrivateForgeAddresses)
+}
+
+// localCertExists returns true if a certificate matching passed name is already present in certmagic.Storage
+func localCertExists(ctx context.Context, cfg *certmagic.Config, name string) bool {
+	if cfg == nil || cfg.Storage == nil || len(cfg.Issuers) == 0 {
+		return false
+	}
+	acmeIssuer := cfg.Issuers[0].(*certmagic.ACMEIssuer)
+	certKey := certmagic.StorageKeys.SiteCert(acmeIssuer.IssuerKey(), name)
+	return cfg.Storage.Exists(ctx, certKey)
+}
+
+// certName returns a string with DNS wildcard for use in TLS cert ("*.peerid.forgeDomain")
+func certName(id peer.ID, suffixDomain string) string {
+	pb36 := peer.ToCid(id).Encode(multibase.MustNewEncoder(multibase.Base36))
+	return fmt.Sprintf("*.%s.%s", pb36, suffixDomain)
 }
 
 func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool) config.AddrsFactory {
@@ -461,24 +483,6 @@ func (d *dns01P2PForgeSolver) Wait(ctx context.Context, challenge acme.Challenge
 func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challenge) error {
 	h := d.hostFn()
 	addrs := h.Addrs()
-
-	if !d.allowPrivateForgeAddresses {
-		sub, err := h.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
-		if err != nil {
-			return err
-		}
-
-		defer sub.Close()
-		select {
-		case e := <-sub.Out():
-			evt := e.(event.EvtLocalReachabilityChanged) // guaranteed safe
-			if evt.Reachability != network.ReachabilityPublic {
-				return fmt.Errorf("reachability status is not yet public, but is %s", evt.Reachability)
-			}
-		case <-ctx.Done():
-			return fmt.Errorf("reachability status has not yet been discovered: %w", ctx.Err())
-		}
-	}
 
 	var advertisedAddrs []multiaddr.Multiaddr
 
