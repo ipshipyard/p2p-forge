@@ -395,6 +395,8 @@ func withHostConnectivity(ctx context.Context, log *zap.SugaredLogger, h host.Ho
 		if evt.Reachability == network.ReachabilityPublic {
 			callback()
 			return
+		} else if evt.Reachability == network.ReachabilityPrivate {
+			log.Infof("certificate will not be requested while libp2p reachability status is %s", evt.Reachability)
 		}
 	case <-ctx.Done():
 		if ctx.Err() != context.Canceled {
