@@ -45,7 +45,7 @@ type ipParser struct {
 	ForgeDomain string
 }
 
-const ttl = 1 * time.Hour
+const ttl = 24 * time.Hour
 
 // ServeDNS implements the plugin.Handler interface.
 func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {

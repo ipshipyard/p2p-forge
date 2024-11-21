@@ -23,11 +23,11 @@ ns2.libp2p.direct.              86400   IN      A       15.204.28.76
 ;ns2.p2p-forge.dwebops.net.     86400   IN      AAAA    2604:2dc0:202:200::64e
 
 ;; TLS Provider
-libp2p.direct.				                  IN	    CAA	    0 issue "letsencrypt.org"
+libp2p.direct.				          86400   IN	    CAA	    0 issue "letsencrypt.org"
 
 ;; HTTP Service
-registration.libp2p.direct.     60      IN      NS      hera.ns.cloudflare.com.
-registration.libp2p.direct.     60      IN      NS      lloyd.ns.cloudflare.com.
+registration.libp2p.direct.     86400   IN      NS      hera.ns.cloudflare.com.
+registration.libp2p.direct.     86400   IN      NS      lloyd.ns.cloudflare.com.
 
 ;; PSL Records
 _psl.libp2p.direct.             86400   IN      TXT     "https://github.com/publicsuffix/list/pull/2084"
