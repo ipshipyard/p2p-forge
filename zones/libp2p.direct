@@ -26,8 +26,8 @@ ns2.libp2p.direct.              86400   IN      A       15.204.28.76
 libp2p.direct.				                  IN	    CAA	    0 issue "letsencrypt.org"
 
 ;; HTTP Service
-libp2p.direct.                  3600    IN      A       40.160.8.207
-registration.libp2p.direct.     3600    IN      A       40.160.8.207
+registration.libp2p.direct.     60      IN      NS      hera.ns.cloudflare.com.
+registration.libp2p.direct.     60      IN      NS      lloyd.ns.cloudflare.com.
 
 ;; PSL Records
 _psl.libp2p.direct.             86400   IN      TXT     "https://github.com/publicsuffix/list/pull/2084"
