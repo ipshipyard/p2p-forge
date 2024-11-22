@@ -203,8 +203,10 @@ func (c *acmeWriter) OnStartup() error {
 
 func withRequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// we skip healthcheck endpoint because its spammed
-		if !strings.HasPrefix(r.URL.Path, healthcheckApiPath) {
+		if strings.HasPrefix(r.URL.Path, healthcheckApiPath) {
+			// skip logging requests to  healthcheck endpoint because its spammed by loadbalancer
+			next.ServeHTTP(w, r)
+		} else {
 			// TODO: decide if we want to keep this logger enabled by default, or move it to debug
 			m := httpsnoop.CaptureMetrics(next, w, r)
 			log.Infof("%s %s (status=%d dt=%s ua=%q)", r.Method, r.URL, m.Code, m.Duration, r.UserAgent())
