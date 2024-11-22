@@ -371,7 +371,7 @@ func TestIPv4Lookup(t *testing.T) {
 				return
 			}
 
-			expectedAnswer := fmt.Sprintf(`%s	3600	IN	A	%s`, m.Question[0].Name, tt.expectedAddress)
+			expectedAnswer := fmt.Sprintf(`%s	86400	IN	A	%s`, m.Question[0].Name, tt.expectedAddress)
 			if r.Answer[0].String() != expectedAnswer {
 				t.Fatalf("Expected %s reply, got %s", expectedAnswer, r.Answer[0].String())
 			}
@@ -487,7 +487,7 @@ func TestIPv6Lookup(t *testing.T) {
 				return
 			}
 
-			expectedAnswer := fmt.Sprintf(`%s	3600	IN	AAAA	%s`, m.Question[0].Name, tt.expectedAddress)
+			expectedAnswer := fmt.Sprintf(`%s	86400	IN	AAAA	%s`, m.Question[0].Name, tt.expectedAddress)
 			if r.Answer[0].String() != expectedAnswer {
 				t.Fatalf("Expected %s reply, got %s", expectedAnswer, r.Answer[0].String())
 			}

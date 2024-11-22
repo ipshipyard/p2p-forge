@@ -10,12 +10,6 @@ import (
 )
 
 var (
-	registrationRequestCount = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: plugin.Namespace,
-		Subsystem: "forge_" + pluginName,
-		Name:      "registrations_total",
-		Help:      "Counter of ACME DNS-01 broker registration requests made to this p2p-forge instance.",
-	}, []string{"status"})
 	dns01ResponseCount = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: plugin.Namespace,
 		Subsystem: "forge_" + pluginName,

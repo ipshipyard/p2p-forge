@@ -7,6 +7,25 @@
 This is the backend of [`AutoTLS` feature introduced in Kubo 0.32.0-rc1](https://github.com/ipfs/kubo/blob/master/docs/config.md#autotls).  
 It is deployed at `libp2p.direct` and maintained by [Interplanetary Shipyard](https://github.com/ipshipyard).
 
+- [High-level Design](#high-level-design)
+  - [Peer Authentication and DNS-01 Challenge and Certificate Issuance](#peer-authentication-and-dns-01-challenge-and-certificate-issuance)
+  - [DNS Resolution and TLS Connection](#dns-resolution-and-tls-connection)
+- [Build](#build)
+- [Install](#install)
+  - [From source](#from-source)
+- [Usage](#usage)
+  - [Local testing](#local-testing)
+  - [Docker](#docker)
+  - [Configuration](#configuration)
+    - [ipparser Syntax](#ipparser-syntax)
+    - [acme Syntax](#acme-syntax)
+  - [Example](#example)
+  - [Handled DNS records](#handled-dns-records)
+    - [IPv4 subdomain handling](#ipv4-subdomain-handling)
+    - [IPv6 subdomain handling](#ipv6-subdomain-handling)
+  - [Submitting Challenge Records](#submitting-challenge-records)
+  - [Health Check](#health-check)
+
 ## High-level Design
 
 The following diagrams show the high-level design of how p2p-forge works.
@@ -211,3 +230,8 @@ curl -X POST "https://registration.libp2p.direct/v1/_acme-challenge" \
 ```
 
 Where the bearer token is derived via the [libp2p HTTP PeerID Auth Specification](https://github.com/libp2p/specs/blob/master/http/peer-id-auth.md).
+
+### Health Check
+
+`/v1/health` will always respond with HTTP 204
+

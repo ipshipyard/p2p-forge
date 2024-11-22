@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +19,11 @@ import (
 	"github.com/coredns/coredns/plugin/pkg/reuseport"
 	"github.com/felixge/httpsnoop"
 	"github.com/ipshipyard/p2p-forge/client"
+	"github.com/prometheus/client_golang/prometheus"
+
+	metrics "github.com/slok/go-http-metrics/metrics/prometheus"
+	"github.com/slok/go-http-metrics/middleware"
+	"github.com/slok/go-http-metrics/middleware/std"
 
 	"github.com/caddyserver/certmagic"
 
@@ -34,6 +38,7 @@ import (
 var log = clog.NewWithPlugin(pluginName)
 
 const registrationApiPath = "/v1/_acme-challenge"
+const healthcheckApiPath = "/v1/health"
 
 // acmeWriter implements writing of ACME Challenge DNS records by exporting an HTTP endpoint.
 type acmeWriter struct {
@@ -88,8 +93,6 @@ func (c *acmeWriter) OnStartup() error {
 	}
 
 	c.ln = ln
-
-	mux := http.NewServeMux()
 	c.nlSetup = true
 
 	// server side secret key and peerID not particularly relevant, so we can generate new ones as needed
@@ -171,11 +174,24 @@ func (c *acmeWriter) OnStartup() error {
 		}
 	}
 
-	// register handlers
-	mux.Handle(registrationApiPath, authPeer)
+	// middleware with prometheus recorder
+	httpMetricsMiddleware := middleware.New(middleware.Config{
+		Recorder: metrics.NewRecorder(metrics.Config{
+			Registry:        prometheus.DefaultRegisterer.(*prometheus.Registry),
+			Prefix:          "coredns_forge_" + pluginName,
+			DurationBuckets: []float64{0.1, 0.5, 1, 2, 5, 8, 10, 20, 30}, // TODO: remove this comment if we are ok with these buckets
+		}),
+		DisableMeasureSize: true, // not meaningful for the registration api
+	})
 
-	// wrap handler in metrics meter
-	c.handler = withRequestMetrics(mux)
+	// register handlers
+	mux := http.NewServeMux()
+	mux.Handle(registrationApiPath, std.Handler(registrationApiPath, httpMetricsMiddleware, authPeer))
+	mux.HandleFunc(healthcheckApiPath, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	c.handler = withRequestLogger(mux)
 
 	go func() {
 		log.Infof("Registration HTTP API (%s) listener at %s", registrationApiPath, c.ln.Addr().String())
@@ -185,12 +201,14 @@ func (c *acmeWriter) OnStartup() error {
 	return nil
 }
 
-func withRequestMetrics(next http.Handler) http.Handler {
+func withRequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		m := httpsnoop.CaptureMetrics(next, w, r)
-		registrationRequestCount.WithLabelValues(strconv.Itoa(m.Code)).Add(1)
-		// TODO: decide if we keep below logger
-		log.Infof("%s %s (status=%d dt=%s ua=%q)", r.Method, r.URL, m.Code, m.Duration, r.UserAgent())
+		// we skip healthcheck endpoint because its spammed
+		if !strings.HasPrefix(r.URL.Path, healthcheckApiPath) {
+			// TODO: decide if we want to keep this logger enabled by default, or move it to debug
+			m := httpsnoop.CaptureMetrics(next, w, r)
+			log.Infof("%s %s (status=%d dt=%s ua=%q)", r.Method, r.URL, m.Code, m.Duration, r.UserAgent())
+		}
 	})
 }
 
