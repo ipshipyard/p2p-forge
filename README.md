@@ -96,17 +96,26 @@ Will download using go mod, build and install the binary in your global Go binar
 
 ### Local testing
 
-Build and run a custom Corefile configuration and on custom port:
+Build and run a custom Corefile configuration and on custom ports (DNS port set to `5354` via CLI, HTTP port set to `5380` via custom Corefile):
 
 ```console
-$ ./p2p-forge -conf Corefile.example -dns.port 5353
+$ ./p2p-forge -conf Corefile.local-dev -dns.port 5354
 ```
 
 Test with `dig`:
 
 ```console
-$ dig A 1-2-3-4.k51qzi5uqu5dlwfht6wwy7lp4z35bgytksvp5sg53fdhcocmirjepowgifkxqd.libp2p.direct @localhost -p 5353
+$ dig A 1-2-3-4.k51qzi5uqu5dlwfht6wwy7lp4z35bgytksvp5sg53fdhcocmirjepowgifkxqd.libp2p.direct @localhost -p 5354
 1.2.3.4
+
+$ curl http://localhost:5380/v1/health -I
+HTTP/1.1 204 No Content
+```
+
+To run on port `53` as non-root user, adjust permission:
+
+```console
+$ sudo setcap cap_net_bind_service=+ep /path/to/p2p-forge
 ```
 
 ### Docker

@@ -1,3 +1,5 @@
+# this file demonstrates reference production settings.
+# for local development use: ./p2p-forge -conf Corefile.local-dev
 libp2p.direct {
     log
     errors

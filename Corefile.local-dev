@@ -1,0 +1,14 @@
+# for local development on ports 5354 (dns) and 5380 (http)
+# run with: ./p2p-forge -conf Corefile.local-dev -dns.port 5354
+libp2p.direct {
+    log
+    errors
+    any # RFC 8482
+    prometheus localhost:9253
+    ipparser libp2p.direct
+    file zones/libp2p.direct
+    acme libp2p.direct {
+        registration-domain registration.libp2p.direct listen-address=:5380 external-tls=true
+        database-type badger badger.libp2p-direct-challenges
+    }
+}
