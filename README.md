@@ -96,17 +96,26 @@ Will download using go mod, build and install the binary in your global Go binar
 
 ### Local testing
 
-Build and run a custom Corefile configuration and on custom port:
+Build and run a custom Corefile configuration and on custom ports (DNS port set to `5354` via CLI, HTTP port set to `5380` via custom Corefile):
 
 ```console
-$ ./p2p-forge -conf Corefile.example -dns.port 5353
+$ ./p2p-forge -conf Corefile.local-dev -dns.port 5354
 ```
 
 Test with `dig`:
 
 ```console
-$ dig A 1-2-3-4.k51qzi5uqu5dlwfht6wwy7lp4z35bgytksvp5sg53fdhcocmirjepowgifkxqd.libp2p.direct @localhost -p 5353
+$ dig A 1-2-3-4.k51qzi5uqu5dlwfht6wwy7lp4z35bgytksvp5sg53fdhcocmirjepowgifkxqd.libp2p.direct @localhost -p 5354
 1.2.3.4
+
+$ curl http://localhost:5380/v1/health -I
+HTTP/1.1 204 No Content
+```
+
+To run on port `53` as non-root user, adjust permission:
+
+```console
+$ sudo setcap cap_net_bind_service=+ep /path/to/p2p-forge
 ```
 
 ### Docker
@@ -154,13 +163,13 @@ acme FORGE_DOMAIN {
 }
 ~~~
 
-- **FORGE_DOMAIN** the domain of the forge (e.g. libp2p.direct)
-- **REGISTRATION_DOMAIN** the domain used by clients to send requests for setting ACME challenges (e.g. registration.libp2p.direct)
+- **FORGE_DOMAIN** the domain suffix of the forge (e.g. `libp2p.direct`)
+- **REGISTRATION_DOMAIN** the HTTP API domain used by clients to send requests for setting ACME challenges (e.g. `registration.libp2p.direct`)
    - **ADDRESS** is the address and port for the internal HTTP server to listen on (e.g. :1234), defaults to `:443`.
-   - external-tls should be set to true if the TLS termination (and validation of the registration domain name) will happen externally or should be handled locally, defaults to false
+   - `external-tls` should be set to `true` if the TLS termination (and validation of the registration domain name) will happen externally or should be handled locally, defaults to false
 - **DB_TYPE** is the type of the backing database used for storing the ACME challenges. Options include:
-    - dynamo TABLE_NAME (where all credentials are set via AWS' standard environment variables)
-    - badger DB_PATH
+  - `dynamo TABLE_NAME` for production-grade key-value store shared across multiple instances (where all credentials are set via AWS' standard environment variables: `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+  - `badger DB_PATH` for local key-value store (good for local development and testing)
 
 ### Example
 
