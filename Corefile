@@ -5,4 +5,15 @@ libp2p.direct {
     prometheus localhost:9253
     ipparser libp2p.direct
     file zones/libp2p.direct
+    acme libp2p.direct {
+        # HTTP API at /v1/_acme-challenge
+        # production settings: TLS is terminated elsewhere:
+        registration-domain registration.libp2p.direct listen-address=:80 external-tls=true
+        # to handle tls termination as well, use: listen-address=:443 external-tls=false
+        #
+        # DNS-01 challenge cache
+        # production settings: DynamoDB shared across all instances
+        database-type dynamo libp2p-direct-challenges
+        # for local dev with badger: database-type badger badger.libp2p-direct-challenges
+    }
 }
