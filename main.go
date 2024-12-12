@@ -5,6 +5,7 @@ import (
 
 	// Load CoreDNS + p2p-forge plugins
 	_ "github.com/ipshipyard/p2p-forge/plugins"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/coremain"
@@ -39,9 +40,22 @@ func init() {
 
 func main() {
 	fmt.Printf("%s %s\n", name, version) // always print version
+	registerVersionMetric()
 	err := godotenv.Load()
 	if err == nil {
 		fmt.Println(".env found and loaded")
 	}
 	coremain.Run()
+}
+
+func registerVersionMetric() {
+	m := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   "coredns",
+		Subsystem:   "forge",
+		Name:        "info",
+		Help:        "Information about p2p-forge instance.",
+		ConstLabels: prometheus.Labels{"version": version},
+	})
+	prometheus.MustRegister(m)
+	m.Set(1)
 }
