@@ -2,6 +2,7 @@ package acme
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -117,12 +118,23 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 					if len(args) != 1 {
 						return nil, nil, c.ArgErr()
 					}
+					// Confirm required AWS environment variables are present
+					requiredVars := []string{
+						"AWS_REGION",
+						"AWS_ACCESS_KEY_ID",
+						"AWS_SECRET_ACCESS_KEY",
+					}
+					for _, v := range requiredVars {
+						if os.Getenv(v) == "" {
+							return nil, nil, fmt.Errorf("database-type dynamo: missing or empty environment variable: %s", v)
+						}
+					}
 
 					ddbClient := ddbv1.New(session.Must(session.NewSession()))
 					ds = ddbds.New(ddbClient, args[0])
 				case "badger":
 					if len(args) != 1 {
-						return nil, nil, fmt.Errorf("need to pass a path for the Badger configuration")
+						return nil, nil, fmt.Errorf("database-type badger: need to pass a path for the Badger configuration")
 					}
 					dbPath := args[0]
 					var err error
