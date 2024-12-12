@@ -12,6 +12,7 @@ require (
 	github.com/ipfs/go-ds-badger4 v0.1.5
 	github.com/ipfs/go-ds-dynamodb v0.2.0
 	github.com/ipfs/go-log/v2 v2.5.1
+	github.com/joho/godotenv v1.5.1
 	github.com/letsencrypt/pebble/v2 v2.6.0
 	github.com/libp2p/go-libp2p v0.37.2
 	github.com/mholt/acmez/v2 v2.0.3
