@@ -3,14 +3,14 @@ package main
 import (
 	"fmt"
 
-	_ "github.com/coredns/coredns/core/plugin" // Load all managed plugins in github.com/coredns/coredns.
-	_ "github.com/ipshipyard/p2p-forge/acme"
-	_ "github.com/ipshipyard/p2p-forge/ipparser"
-	"github.com/joho/godotenv"
+	// Load CoreDNS + p2p-forge plugins
+	_ "github.com/ipshipyard/p2p-forge/plugins"
 
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/coremain"
 	clog "github.com/coredns/coredns/plugin/pkg/log"
+
+	"github.com/joho/godotenv"
 )
 
 var p2pForgeDirectives = []string{

@@ -41,9 +41,8 @@ import (
 	madns "github.com/multiformats/go-multiaddr-dns"
 	"github.com/multiformats/go-multibase"
 
-	_ "github.com/coredns/coredns/core/plugin" // Load all managed plugins in github.com/coredns/coredns.
-	_ "github.com/ipshipyard/p2p-forge/acme"
-	_ "github.com/ipshipyard/p2p-forge/ipparser"
+	// Load CoreDNS + p2p-forge plugins
+	_ "github.com/ipshipyard/p2p-forge/plugins"
 
 	pebbleCA "github.com/letsencrypt/pebble/v2/ca"
 	pebbleDB "github.com/letsencrypt/pebble/v2/db"
