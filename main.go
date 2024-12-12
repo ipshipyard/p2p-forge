@@ -6,6 +6,7 @@ import (
 	_ "github.com/coredns/coredns/core/plugin" // Load all managed plugins in github.com/coredns/coredns.
 	_ "github.com/ipshipyard/p2p-forge/acme"
 	_ "github.com/ipshipyard/p2p-forge/ipparser"
+	"github.com/joho/godotenv"
 
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/coremain"
@@ -38,5 +39,9 @@ func init() {
 
 func main() {
 	fmt.Printf("%s %s\n", name, version) // always print version
+	err := godotenv.Load()
+	if err == nil {
+		fmt.Println(".env found and loaded")
+	}
 	coremain.Run()
 }
