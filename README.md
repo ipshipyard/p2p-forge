@@ -233,8 +233,8 @@ curl -X POST "https://registration.libp2p.direct/v1/_acme-challenge" \
 -H "Authorization: libp2p-PeerID bearer=\"<base64-encoded-opaque-blob>\""
 -H "Content-Type: application/json" \
 -d '{
-  "value": "your_acme_challenge_token",
-  "addresses": ["your", "multiaddrs"]
+  "Value": "your_acme_challenge_token",
+  "Addresses": ["your", "multiaddrs"]
 }'
 ```
 
