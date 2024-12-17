@@ -1,6 +1,5 @@
 # p2p-forge
 
-
 > An Authoritative DNS server and API for distributing DNS subdomains with CA-signed TLS certificates to libp2p peers.
 
 <a href="http://ipshipyard.com/"><img align="right" src="https://github.com/user-attachments/assets/39ed3504-bb71-47f6-9bf8-cb9a1698f272" /></a>

@@ -45,6 +45,7 @@ func main() {
 	if err == nil {
 		fmt.Println(".env found and loaded")
 	}
+
 	coremain.Run()
 }
 
