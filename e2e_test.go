@@ -13,7 +13,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"math/big"
 	"net"
@@ -29,7 +28,6 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
-	httppeeridauth "github.com/libp2p/go-libp2p/p2p/http/auth"
 	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
@@ -237,21 +235,12 @@ func TestSetACMEChallenge(t *testing.T) {
 	testDigest := sha256.Sum256([]byte("test"))
 	testChallenge := base64.RawURLEncoding.EncodeToString(testDigest[:])
 
-	req, err := client.ChallengeRequest(ctx, fmt.Sprintf("http://127.0.0.1:%d", httpPort), testChallenge, h.Addrs())
+	err = client.SendChallenge(ctx, fmt.Sprintf("http://127.0.0.1:%d", httpPort), sk, testChallenge, h.Addrs(), authToken, "", func(req *http.Request) error {
+		req.Host = forgeRegistration
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	req.Host = forgeRegistration
-	req.Header.Set(authForgeHeader, authToken)
-
-	peerHTTPClient := &httppeeridauth.ClientPeerIDAuth{PrivKey: sk}
-	_, resp, err := peerHTTPClient.AuthenticatedDo(http.DefaultClient, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		t.Fatal(fmt.Errorf("%s : %s", resp.Status, respBody))
 	}
 
 	peerIDb36, err := peer.ToCid(h.ID()).StringOfBase(multibase.Base36)
