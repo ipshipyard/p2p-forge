@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/network"
 
-	httppeeridauth "github.com/libp2p/go-libp2p/p2p/http/auth"
 	"go.uber.org/zap"
 
 	"github.com/caddyserver/certmagic"
@@ -280,12 +278,13 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		Email:  mgrCfg.userEmail,
 		Agreed: true,
 		DNS01Solver: &dns01P2PForgeSolver{
-			forge:                      mgrCfg.forgeRegistrationEndpoint,
+			forgeRegistrationEndpoint:  mgrCfg.forgeRegistrationEndpoint,
 			forgeAuth:                  mgrCfg.forgeAuth,
 			hostFn:                     hostFn,
 			modifyForgeRequest:         mgrCfg.modifyForgeRequest,
 			userAgent:                  mgrCfg.userAgent,
 			allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
+			log:                        mgrCfg.log.Named("dns01solver"),
 		},
 		TrustedRoots: mgrCfg.trustedRoots,
 		Logger:       certCfg.Logger,
@@ -468,21 +467,25 @@ func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool) config
 }
 
 type dns01P2PForgeSolver struct {
-	forge                      string
+	forgeRegistrationEndpoint  string
 	forgeAuth                  string
 	hostFn                     func() host.Host
 	modifyForgeRequest         func(r *http.Request) error
 	userAgent                  string
 	allowPrivateForgeAddresses bool
+	log                        *zap.SugaredLogger
 }
 
 func (d *dns01P2PForgeSolver) Wait(ctx context.Context, challenge acme.Challenge) error {
+	d.log.Debugw("waiting for DNS-01 TXT record to be set")
 	// TODO: query the authoritative DNS
 	time.Sleep(time.Second * 5)
 	return nil
 }
 
 func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challenge) error {
+	d.log.Debugw("getting DNS-01 challenge value from CA", "acme_challenge", challenge)
+	dns01value := challenge.DNS01KeyAuthorization()
 	h := d.hostFn()
 	addrs := h.Addrs()
 
@@ -503,38 +506,22 @@ func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challe
 	} else {
 		advertisedAddrs = addrs
 	}
+	d.log.Debugw("advertised libp2p addrs for p2p-forge broker to try", "addrs", advertisedAddrs)
 
-	req, err := ChallengeRequest(ctx, d.forge, challenge.DNS01KeyAuthorization(), advertisedAddrs)
+	d.log.Debugw("asking p2p-forge broker to set DNS-01 TXT record", "url", d.forgeRegistrationEndpoint, "dns01_value", dns01value)
+	err := SendChallenge(ctx,
+		d.forgeRegistrationEndpoint,
+		h.Peerstore().PrivKey(h.ID()),
+		dns01value,
+		advertisedAddrs,
+		d.forgeAuth,
+		d.userAgent,
+		d.modifyForgeRequest,
+	)
 	if err != nil {
-		return err
+		return fmt.Errorf("p2p-forge broker registration error: %w", err)
 	}
 
-	// Add forge auth header if set
-	if d.forgeAuth != "" {
-		req.Header.Set(ForgeAuthHeader, d.forgeAuth)
-	}
-
-	// Always include User-Agent header
-	if d.userAgent == "" {
-		d.userAgent = defaultUserAgent
-	}
-	req.Header.Set("User-Agent", d.userAgent)
-
-	if d.modifyForgeRequest != nil {
-		if err := d.modifyForgeRequest(req); err != nil {
-			return err
-		}
-	}
-
-	client := &httppeeridauth.ClientPeerIDAuth{PrivKey: h.Peerstore().PrivKey(h.ID())}
-	_, resp, err := client.AuthenticatedDo(http.DefaultClient, req)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s : %s", resp.Status, respBody)
-	}
 	return nil
 }
 
