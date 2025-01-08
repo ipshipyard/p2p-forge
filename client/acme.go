@@ -241,6 +241,8 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	}
 	if mgrCfg.caEndpoint == "" {
 		mgrCfg.caEndpoint = DefaultCAEndpoint
+	} else if mgrCfg.caEndpoint == DefaultCATestEndpoint {
+		mgrCfg.log.Errorf("initialized WithCAEndpoint(DefaultCATestEndpoint) (%s): certificate will be issued for staging purposes and won't work correctly in web browser; make sure to change to WithCAEndpoint(DefaultCAEndpoint) (%s) before deploying to production or testing in web browser", DefaultCATestEndpoint, DefaultCAEndpoint)
 	}
 	if mgrCfg.forgeRegistrationEndpoint == "" {
 		if mgrCfg.forgeDomain == DefaultForgeDomain {
