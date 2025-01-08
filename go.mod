@@ -4,7 +4,7 @@ go 1.23
 
 require (
 	github.com/aws/aws-sdk-go v1.55.5
-	github.com/caddyserver/certmagic v0.21.5
+	github.com/caddyserver/certmagic v0.21.6
 	github.com/coredns/caddy v1.1.1
 	github.com/coredns/coredns v1.11.3
 	github.com/felixge/httpsnoop v1.0.4
