@@ -4,7 +4,7 @@ go 1.23
 
 require (
 	github.com/aws/aws-sdk-go v1.55.5
-	github.com/caddyserver/certmagic v0.21.4
+	github.com/caddyserver/certmagic v0.21.6
 	github.com/coredns/caddy v1.1.1
 	github.com/coredns/coredns v1.11.3
 	github.com/felixge/httpsnoop v1.0.4
@@ -15,7 +15,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/letsencrypt/pebble/v2 v2.6.0
 	github.com/libp2p/go-libp2p v0.38.1
-	github.com/mholt/acmez/v2 v2.0.3
+	github.com/mholt/acmez/v3 v3.0.0
 	github.com/miekg/dns v1.1.62
 	github.com/multiformats/go-multiaddr v0.14.0
 	github.com/multiformats/go-multiaddr-dns v0.4.1
@@ -131,12 +131,13 @@ require (
 	go.uber.org/fx v1.23.0 // indirect
 	go.uber.org/mock v0.5.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/crypto v0.31.0 // indirect
+	go.uber.org/zap/exp v0.3.0 // indirect
+	golang.org/x/crypto v0.32.0 // indirect
 	golang.org/x/exp v0.0.0-20241217172543-b2144cdd0a67 // indirect
 	golang.org/x/mod v0.22.0 // indirect
-	golang.org/x/net v0.32.0 // indirect
+	golang.org/x/net v0.34.0 // indirect
 	golang.org/x/sync v0.10.0 // indirect
-	golang.org/x/sys v0.28.0 // indirect
+	golang.org/x/sys v0.29.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 	golang.org/x/tools v0.28.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240318140521-94a12d6c2237 // indirect
