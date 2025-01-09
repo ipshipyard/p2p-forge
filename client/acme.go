@@ -417,7 +417,8 @@ func (m *P2PForgeCertMgr) TLSConfig() *tls.Config {
 }
 
 func (m *P2PForgeCertMgr) AddrStrings() []string {
-	return []string{fmt.Sprintf("/ip4/0.0.0.0/tcp/0/tls/sni/*.%s/ws", m.forgeDomain),
+	return []string{
+		fmt.Sprintf("/ip4/0.0.0.0/tcp/0/tls/sni/*.%s/ws", m.forgeDomain),
 		fmt.Sprintf("/ip6/::/tcp/0/tls/sni/*.%s/ws", m.forgeDomain),
 	}
 }
@@ -449,7 +450,7 @@ func certName(id peer.ID, suffixDomain string) string {
 }
 
 func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool) config.AddrsFactory {
-	var p2pForgeWssComponent = multiaddr.StringCast(fmt.Sprintf("/tls/sni/*.%s/ws", m.forgeDomain))
+	p2pForgeWssComponent := multiaddr.StringCast(fmt.Sprintf("/tls/sni/*.%s/ws", m.forgeDomain))
 
 	return func(multiaddrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
 		var skipForgeAddrs bool
@@ -526,12 +527,14 @@ func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challe
 }
 
 func (d *dns01P2PForgeSolver) CleanUp(ctx context.Context, challenge acme.Challenge) error {
-	//TODO: Should we implement this, or is doing delete and Last-Writer-Wins enough?
+	// TODO: Should we implement this, or is doing delete and Last-Writer-Wins enough?
 	return nil
 }
 
-var _ acmez.Solver = (*dns01P2PForgeSolver)(nil)
-var _ acmez.Waiter = (*dns01P2PForgeSolver)(nil)
+var (
+	_ acmez.Solver = (*dns01P2PForgeSolver)(nil)
+	_ acmez.Waiter = (*dns01P2PForgeSolver)(nil)
+)
 
 func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain string, allowPrivateForgeAddrs bool, p2pForgeWssComponent multiaddr.Multiaddr, multiaddrs []multiaddr.Multiaddr, log *zap.SugaredLogger) []multiaddr.Multiaddr {
 	retAddrs := make([]multiaddr.Multiaddr, 0, len(multiaddrs))
@@ -601,9 +604,9 @@ func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain str
 			continue
 		}
 
-		pidStr := peer.ToCid(peerIDFn()).Encode(multibase.MustNewEncoder(multibase.Base36))
+		b36PidStr := peer.ToCid(peerIDFn()).Encode(multibase.MustNewEncoder(multibase.Base36))
 
-		newMaStr := fmt.Sprintf("%s/tcp/%s/tls/sni/%s.%s.%s/ws", ipMaStr, tcpPortStr, escapedIPStr, pidStr, forgeDomain)
+		newMaStr := fmt.Sprintf("%s/tcp/%s/tls/sni/%s.%s.%s/ws", ipMaStr, tcpPortStr, escapedIPStr, b36PidStr, forgeDomain)
 		newMA, err := multiaddr.NewMultiaddr(newMaStr)
 		if err != nil {
 			log.Errorf("error creating new multiaddr from %q: %s", newMaStr, err.Error())
@@ -611,6 +614,15 @@ func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain str
 			continue
 		}
 		retAddrs = append(retAddrs, newMA)
+
+		// upon successful new ipX mutliaddr creation, create an additional dns multiaddr
+		dnsMaStr := fmt.Sprintf("/dns/%s.%s.%s/tcp/%s/tls/ws", escapedIPStr, b36PidStr, forgeDomain, tcpPortStr)
+		dnsMA, err := multiaddr.NewMultiaddr(dnsMaStr)
+		if err == nil {
+			retAddrs = append(retAddrs, dnsMA)
+		} else {
+			log.Errorf("error creating new multiaddr from %q: %s", dnsMaStr, err.Error())
+		}
 	}
 	return retAddrs
 }
