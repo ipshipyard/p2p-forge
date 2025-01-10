@@ -2,8 +2,9 @@ $TTL 300
 $ORIGIN libp2p.direct.
 
 ;; SOA Records
+;; TODO: switch to aws1.libp2p.direct after glue record is in place
 @                               86400   IN      SOA     ns1.libp2p.direct. domains.ipshipyard.com. (
-                                                        2025011001  ; serial
+                                                        2025011002  ; serial
                                                         86400       ; refresh
                                                         2400        ; retry
                                                         604800      ; expire
@@ -12,18 +13,39 @@ $ORIGIN libp2p.direct.
 
 ;; DNS Service
 ;; NOTE: using subdomain here works because we have Glue Records set up at Registrar
+
+;; manual legacy dev
 libp2p.direct.                  86400   IN      NS      ns1.libp2p.direct.
 libp2p.direct.                  86400   IN      NS      ns2.libp2p.direct.
-libp2p.direct.                  86400   IN      NS      ns3.libp2p.direct.
 
+;; waterworks-infra
+libp2p.direct.                  86400   IN      NS      aws1.libp2p.direct.
+libp2p.direct.                  86400   IN      NS      aws2.libp2p.direct.
+libp2p.direct.                  86400   IN      NS      ovh1.libp2p.direct.
+
+;; dev1
 ns1.libp2p.direct.              86400   IN      A       40.160.8.207
 ns1.libp2p.direct.              86400   IN      AAAA    2604:2dc0:101:100::265
 
+;; dev2
 ns2.libp2p.direct.              86400   IN      A       15.204.28.76
 ns2.libp2p.direct.              86400   IN      AAAA    2604:2dc0:202:200::64e
 
+;; aws-libp2p-direct-01
+aws1.libp2p.direct.             86400   IN      A       18.188.47.119
+aws1.libp2p.direct.             86400   IN      AAAA    2600:1f16:f2:9800:9fe5:445b:d8ae:efe3
+
+;; TODO: ns3 was renamed to aws1. remove this after removing dev boxes
 ns3.libp2p.direct.              86400   IN      A       18.188.47.119
 ns3.libp2p.direct.              86400   IN      AAAA    2600:1f16:f2:9800:9fe5:445b:d8ae:efe3
+
+;; aws-libp2p-direct-02
+aws2.libp2p.direct.             86400   IN      A       18.219.153.245
+aws2.libp2p.direct.             86400   IN      AAAA    2600:1f16:f2:9801:e482:8ee0:dfba:9157
+
+;; ovh-libp2p-direct-01
+ovh1.libp2p.direct.             86400   IN      A       15.204.30.239
+ovh1.libp2p.direct.             86400   IN      AAAA    2604:2dc0:202:200::80d
 
 ;; Limit allowed CAs to Let's Encrypt, we discussed feasibility with them and no concerns were raised:
 ;; https://community.letsencrypt.org/t/feedback-on-raising-certificates-per-registered-domain-to-enable-peer-to-peer-networking/223003
