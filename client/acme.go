@@ -554,18 +554,18 @@ func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain str
 
 		index := 0
 		var escapedIPStr string
-		var ipMaStr string
+		var ipVersion string
 		var tcpPortStr string
 		multiaddr.ForEach(withoutForgeWSS, func(c multiaddr.Component) bool {
 			switch index {
 			case 0:
 				switch c.Protocol().Code {
 				case multiaddr.P_IP4:
-					ipMaStr = c.String()
+					ipVersion = "4"
 					ipAddr := c.Value()
 					escapedIPStr = strings.ReplaceAll(ipAddr, ".", "-")
 				case multiaddr.P_IP6:
-					ipMaStr = c.String()
+					ipVersion = "6"
 					ipAddr := c.Value()
 					escapedIPStr = strings.ReplaceAll(ipAddr, ":", "-")
 					if escapedIPStr[0] == '-' {
@@ -606,7 +606,7 @@ func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain str
 
 		b36PidStr := peer.ToCid(peerIDFn()).Encode(multibase.MustNewEncoder(multibase.Base36))
 
-		newMaStr := fmt.Sprintf("%s/tcp/%s/tls/sni/%s.%s.%s/ws", ipMaStr, tcpPortStr, escapedIPStr, b36PidStr, forgeDomain)
+		newMaStr := fmt.Sprintf("/dns%s/%s.%s.%s/tcp/%s/tls/ws", ipVersion, escapedIPStr, b36PidStr, forgeDomain, tcpPortStr)
 		newMA, err := multiaddr.NewMultiaddr(newMaStr)
 		if err != nil {
 			log.Errorf("error creating new multiaddr from %q: %s", newMaStr, err.Error())
@@ -614,15 +614,6 @@ func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain str
 			continue
 		}
 		retAddrs = append(retAddrs, newMA)
-
-		// upon successful new ipX mutliaddr creation, create an additional dns multiaddr
-		dnsMaStr := fmt.Sprintf("/dns/%s.%s.%s/tcp/%s/tls/ws", escapedIPStr, b36PidStr, forgeDomain, tcpPortStr)
-		dnsMA, err := multiaddr.NewMultiaddr(dnsMaStr)
-		if err == nil {
-			retAddrs = append(retAddrs, dnsMA)
-		} else {
-			log.Errorf("error creating new multiaddr from %q: %s", dnsMaStr, err.Error())
-		}
 	}
 	return retAddrs
 }
