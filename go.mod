@@ -1,6 +1,7 @@
 module github.com/ipshipyard/p2p-forge
 
-go 1.23
+// NOTE: p2p-forge should match go.mod of latest go-libp2p release
+go 1.22.0
 
 require (
 	github.com/aws/aws-sdk-go v1.55.5
@@ -21,7 +22,7 @@ require (
 	github.com/multiformats/go-multiaddr-dns v0.4.1
 	github.com/multiformats/go-multibase v0.2.0
 	github.com/prometheus/client_golang v1.20.5
-	github.com/slok/go-http-metrics v0.13.0
+	github.com/slok/go-http-metrics v0.12.0
 	go.uber.org/zap v1.27.0
 )
 
