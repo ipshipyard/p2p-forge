@@ -39,6 +39,7 @@ type P2PForgeCertMgr struct {
 	cfg                        *certmagic.Config
 	log                        *zap.SugaredLogger
 	allowPrivateForgeAddresses bool
+	resolvedDNSMultiaddrs      bool
 
 	hasCert     bool // tracking if we've received a certificate
 	certCheckMx sync.RWMutex
@@ -85,6 +86,7 @@ type P2PForgeCertMgrConfig struct {
 	onCertLoaded               func()
 	log                        *zap.SugaredLogger
 	allowPrivateForgeAddresses bool
+	resolvedDNSMultiaddrs      bool
 }
 
 type P2PForgeCertMgrOptions func(*P2PForgeCertMgrConfig) error
@@ -187,6 +189,15 @@ func WithAllowPrivateForgeAddrs() P2PForgeCertMgrOptions {
 func WithLogger(log *zap.SugaredLogger) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
 		config.log = log
+		return nil
+	}
+}
+
+// WithResolvedDNSMultiaddrs enables advertising /dnsX/<escaped-ip>.<peer-id>.<forge-domain>/tcp/<port>/tls/ws addresses
+// instead of the default /ipX/<ip>/tcp/<port>/tls/sni/<escaped-ip>.<peer-id>.<forge-domain>/ws.
+func WithResolvedDNSMultiaddrs() P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.resolvedDNSMultiaddrs = true
 		return nil
 	}
 }
@@ -301,6 +312,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		cfg:                        certCfg,
 		log:                        mgrCfg.log,
 		allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
+		resolvedDNSMultiaddrs:      mgrCfg.resolvedDNSMultiaddrs,
 	}
 
 	certCfg.OnEvent = func(ctx context.Context, event string, data map[string]any) error {
@@ -430,7 +442,7 @@ func (m *P2PForgeCertMgr) AddressFactory() config.AddrsFactory {
 	tlsCfg := m.cfg.TLSConfig()
 	tlsCfg.NextProtos = []string{"h2", "http/1.1"} // remove the ACME ALPN and set the HTTP 1.1 and 2 ALPNs
 
-	return m.createAddrsFactory(m.allowPrivateForgeAddresses)
+	return m.createAddrsFactory(m.allowPrivateForgeAddresses, m.resolvedDNSMultiaddrs)
 }
 
 // localCertExists returns true if a certificate matching passed name is already present in certmagic.Storage
@@ -449,7 +461,7 @@ func certName(id peer.ID, suffixDomain string) string {
 	return fmt.Sprintf("*.%s.%s", pb36, suffixDomain)
 }
 
-func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool) config.AddrsFactory {
+func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool, resolvedDNSMultiaddrs bool) config.AddrsFactory {
 	p2pForgeWssComponent := multiaddr.StringCast(fmt.Sprintf("/tls/sni/*.%s/ws", m.forgeDomain))
 
 	return func(multiaddrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
@@ -463,7 +475,7 @@ func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool) config
 		}
 		m.certCheckMx.RUnlock()
 
-		return addrFactoryFn(skipForgeAddrs, func() peer.ID { return m.hostFn().ID() }, m.forgeDomain, allowPrivateForgeAddrs, p2pForgeWssComponent, multiaddrs, m.log)
+		return addrFactoryFn(skipForgeAddrs, func() peer.ID { return m.hostFn().ID() }, m.forgeDomain, allowPrivateForgeAddrs, resolvedDNSMultiaddrs, p2pForgeWssComponent, multiaddrs, m.log)
 	}
 }
 
@@ -536,7 +548,7 @@ var (
 	_ acmez.Waiter = (*dns01P2PForgeSolver)(nil)
 )
 
-func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain string, allowPrivateForgeAddrs bool, p2pForgeWssComponent multiaddr.Multiaddr, multiaddrs []multiaddr.Multiaddr, log *zap.SugaredLogger) []multiaddr.Multiaddr {
+func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain string, allowPrivateForgeAddrs bool, resolvedDNSMultiaddrs bool, p2pForgeWssComponent multiaddr.Multiaddr, multiaddrs []multiaddr.Multiaddr, log *zap.SugaredLogger) []multiaddr.Multiaddr {
 	retAddrs := make([]multiaddr.Multiaddr, 0, len(multiaddrs))
 	for _, a := range multiaddrs {
 		if isRelayAddr(a) {
@@ -555,6 +567,7 @@ func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain str
 		index := 0
 		var escapedIPStr string
 		var ipVersion string
+		var ipMaStr string
 		var tcpPortStr string
 		multiaddr.ForEach(withoutForgeWSS, func(c multiaddr.Component) bool {
 			switch index {
@@ -562,10 +575,12 @@ func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain str
 				switch c.Protocol().Code {
 				case multiaddr.P_IP4:
 					ipVersion = "4"
+					ipMaStr = c.String()
 					ipAddr := c.Value()
 					escapedIPStr = strings.ReplaceAll(ipAddr, ".", "-")
 				case multiaddr.P_IP6:
 					ipVersion = "6"
+					ipMaStr = c.String()
 					ipAddr := c.Value()
 					escapedIPStr = strings.ReplaceAll(ipAddr, ":", "-")
 					if escapedIPStr[0] == '-' {
@@ -606,7 +621,12 @@ func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain str
 
 		b36PidStr := peer.ToCid(peerIDFn()).Encode(multibase.MustNewEncoder(multibase.Base36))
 
-		newMaStr := fmt.Sprintf("/dns%s/%s.%s.%s/tcp/%s/tls/ws", ipVersion, escapedIPStr, b36PidStr, forgeDomain, tcpPortStr)
+		var newMaStr string
+		if resolvedDNSMultiaddrs {
+			newMaStr = fmt.Sprintf("/dns%s/%s.%s.%s/tcp/%s/tls/ws", ipVersion, escapedIPStr, b36PidStr, forgeDomain, tcpPortStr)
+		} else {
+			newMaStr = fmt.Sprintf("%s/tcp/%s/tls/sni/%s.%s.%s/ws", ipMaStr, tcpPortStr, escapedIPStr, b36PidStr, forgeDomain)
+		}
 		newMA, err := multiaddr.NewMultiaddr(newMaStr)
 		if err != nil {
 			log.Errorf("error creating new multiaddr from %q: %s", newMaStr, err.Error())

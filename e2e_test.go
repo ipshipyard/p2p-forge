@@ -606,7 +606,7 @@ func TestLibp2pACMEE2E(t *testing.T) {
 		if strings.Contains(as, "p2p-circuit") {
 			continue
 		}
-		if strings.Contains(as, "libp2p.direct/tcp/") && strings.Contains(as, "/tls/ws") {
+		if strings.Contains(as, "libp2p.direct/ws") {
 			dialAddr = addr
 			break
 		}
