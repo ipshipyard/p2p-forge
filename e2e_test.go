@@ -484,21 +484,32 @@ func TestIPv6Lookup(t *testing.T) {
 }
 
 func TestLibp2pACMEE2E(t *testing.T) {
+	isValidResolvedForgeAddr := func(addr string) bool {
+		return strings.Contains(addr, "libp2p.direct/ws")
+	}
+	isValidShortForgeAddr := func(addr string) bool {
+		return strings.Contains(addr, "libp2p.direct/tcp/") && strings.Contains(addr, "/tls/ws")
+	}
+
 	tests := []struct {
-		name       string
-		clientOpts []client.P2PForgeCertMgrOptions
+		name             string
+		clientOpts       []client.P2PForgeCertMgrOptions
+		isValidForgeAddr func(addr string) bool
 	}{
 		{
-			name:       "default opts",
-			clientOpts: []client.P2PForgeCertMgrOptions{},
+			name:             "default opts",
+			clientOpts:       []client.P2PForgeCertMgrOptions{},
+			isValidForgeAddr: isValidResolvedForgeAddr,
 		},
 		{
-			name:       "explicit WithShortForgeAddrs(true)",
-			clientOpts: []client.P2PForgeCertMgrOptions{client.WithShortForgeAddrs(true)},
+			name:             "explicit WithShortForgeAddrs(true)",
+			clientOpts:       []client.P2PForgeCertMgrOptions{client.WithShortForgeAddrs(true)},
+			isValidForgeAddr: isValidShortForgeAddr,
 		},
 		{
-			name:       "explicit WithShortForgeAddrs(false)",
-			clientOpts: []client.P2PForgeCertMgrOptions{client.WithShortForgeAddrs(false)},
+			name:             "explicit WithShortForgeAddrs(false)",
+			clientOpts:       []client.P2PForgeCertMgrOptions{client.WithShortForgeAddrs(false)},
+			isValidForgeAddr: isValidResolvedForgeAddr,
 		},
 	}
 
@@ -630,7 +641,7 @@ func TestLibp2pACMEE2E(t *testing.T) {
 				if strings.Contains(as, "p2p-circuit") {
 					continue
 				}
-				if strings.Contains(as, "libp2p.direct/ws") {
+				if tt.isValidForgeAddr(as) {
 					dialAddr = addr
 					break
 				}
