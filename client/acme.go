@@ -39,7 +39,7 @@ type P2PForgeCertMgr struct {
 	cfg                        *certmagic.Config
 	log                        *zap.SugaredLogger
 	allowPrivateForgeAddresses bool
-	resolvedDNSMultiaddrs      bool
+	produceShortAddrs          bool
 
 	hasCert     bool // tracking if we've received a certificate
 	certCheckMx sync.RWMutex
@@ -86,7 +86,7 @@ type P2PForgeCertMgrConfig struct {
 	onCertLoaded               func()
 	log                        *zap.SugaredLogger
 	allowPrivateForgeAddresses bool
-	resolvedDNSMultiaddrs      bool
+	produceShortAddrs          bool
 }
 
 type P2PForgeCertMgrOptions func(*P2PForgeCertMgrConfig) error
@@ -186,18 +186,26 @@ func WithAllowPrivateForgeAddrs() P2PForgeCertMgrOptions {
 	}
 }
 
-func WithLogger(log *zap.SugaredLogger) P2PForgeCertMgrOptions {
+// WithShortForgeAddrs controls if final addresses produced by p2p-forge addr
+// factory are short and start with /dnsX or are longer and the DNS name is
+// fully resolved into /ipX /sni components.
+//
+// Using /dnsX may be beneficial when interop with older libp2p clients is
+// required, or when shorter addresses are preferred.
+//
+// Example multiaddr formats:
+//   - When true: /dnsX/<escaped-ip>.<peer-id>.<forge-domain>/tcp/<port>/tls/ws
+//   - When false:  /ipX/<ip>/tcp/<port>/tls/sni/<escaped-ip>.<peer-id>.<forge-domain>/ws
+func WithShortForgeAddrs(produceShortAddrs bool) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
-		config.log = log
+		config.produceShortAddrs = produceShortAddrs
 		return nil
 	}
 }
 
-// WithResolvedDNSMultiaddrs enables advertising /dnsX/<escaped-ip>.<peer-id>.<forge-domain>/tcp/<port>/tls/ws addresses
-// instead of the default /ipX/<ip>/tcp/<port>/tls/sni/<escaped-ip>.<peer-id>.<forge-domain>/ws.
-func WithResolvedDNSMultiaddrs() P2PForgeCertMgrOptions {
+func WithLogger(log *zap.SugaredLogger) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
-		config.resolvedDNSMultiaddrs = true
+		config.log = log
 		return nil
 	}
 }
@@ -312,7 +320,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		cfg:                        certCfg,
 		log:                        mgrCfg.log,
 		allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
-		resolvedDNSMultiaddrs:      mgrCfg.resolvedDNSMultiaddrs,
+		produceShortAddrs:          mgrCfg.produceShortAddrs,
 	}
 
 	certCfg.OnEvent = func(ctx context.Context, event string, data map[string]any) error {
@@ -442,7 +450,7 @@ func (m *P2PForgeCertMgr) AddressFactory() config.AddrsFactory {
 	tlsCfg := m.cfg.TLSConfig()
 	tlsCfg.NextProtos = []string{"h2", "http/1.1"} // remove the ACME ALPN and set the HTTP 1.1 and 2 ALPNs
 
-	return m.createAddrsFactory(m.allowPrivateForgeAddresses, m.resolvedDNSMultiaddrs)
+	return m.createAddrsFactory(m.allowPrivateForgeAddresses, m.produceShortAddrs)
 }
 
 // localCertExists returns true if a certificate matching passed name is already present in certmagic.Storage
@@ -461,7 +469,7 @@ func certName(id peer.ID, suffixDomain string) string {
 	return fmt.Sprintf("*.%s.%s", pb36, suffixDomain)
 }
 
-func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool, resolvedDNSMultiaddrs bool) config.AddrsFactory {
+func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool, produceShortAddrs bool) config.AddrsFactory {
 	p2pForgeWssComponent := multiaddr.StringCast(fmt.Sprintf("/tls/sni/*.%s/ws", m.forgeDomain))
 
 	return func(multiaddrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
@@ -475,7 +483,7 @@ func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool, resolv
 		}
 		m.certCheckMx.RUnlock()
 
-		return addrFactoryFn(skipForgeAddrs, func() peer.ID { return m.hostFn().ID() }, m.forgeDomain, allowPrivateForgeAddrs, resolvedDNSMultiaddrs, p2pForgeWssComponent, multiaddrs, m.log)
+		return addrFactoryFn(skipForgeAddrs, func() peer.ID { return m.hostFn().ID() }, m.forgeDomain, allowPrivateForgeAddrs, produceShortAddrs, p2pForgeWssComponent, multiaddrs, m.log)
 	}
 }
 
@@ -548,7 +556,7 @@ var (
 	_ acmez.Waiter = (*dns01P2PForgeSolver)(nil)
 )
 
-func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain string, allowPrivateForgeAddrs bool, resolvedDNSMultiaddrs bool, p2pForgeWssComponent multiaddr.Multiaddr, multiaddrs []multiaddr.Multiaddr, log *zap.SugaredLogger) []multiaddr.Multiaddr {
+func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain string, allowPrivateForgeAddrs bool, produceShortAddrs bool, p2pForgeWssComponent multiaddr.Multiaddr, multiaddrs []multiaddr.Multiaddr, log *zap.SugaredLogger) []multiaddr.Multiaddr {
 	retAddrs := make([]multiaddr.Multiaddr, 0, len(multiaddrs))
 	for _, a := range multiaddrs {
 		if isRelayAddr(a) {
@@ -622,7 +630,7 @@ func addrFactoryFn(skipForgeAddrs bool, peerIDFn func() peer.ID, forgeDomain str
 		b36PidStr := peer.ToCid(peerIDFn()).Encode(multibase.MustNewEncoder(multibase.Base36))
 
 		var newMaStr string
-		if resolvedDNSMultiaddrs {
+		if produceShortAddrs {
 			newMaStr = fmt.Sprintf("/dns%s/%s.%s.%s/tcp/%s/tls/ws", ipVersion, escapedIPStr, b36PidStr, forgeDomain, tcpPortStr)
 		} else {
 			newMaStr = fmt.Sprintf("%s/tcp/%s/tls/sni/%s.%s.%s/ws", ipMaStr, tcpPortStr, escapedIPStr, b36PidStr, forgeDomain)
