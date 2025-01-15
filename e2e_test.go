@@ -484,139 +484,177 @@ func TestIPv6Lookup(t *testing.T) {
 }
 
 func TestLibp2pACMEE2E(t *testing.T) {
-	db := pebbleDB.NewMemoryStore()
-	logger := log.New(os.Stdout, "", 0)
-	ca := pebbleCA.New(logger, db, "", 0, 1, 0)
-	va := pebbleVA.New(logger, 0, 0, false, dnsServerAddress, db)
-
-	wfeImpl := pebbleWFE.New(logger, db, va, ca, false, false, 3, 5)
-	muxHandler := wfeImpl.Handler()
-
-	acmeHTTPListener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	isValidResolvedForgeAddr := func(addr string) bool {
+		return strings.Contains(addr, "libp2p.direct/ws")
 	}
-	defer acmeHTTPListener.Close()
-
-	// Generate the self-signed certificate and private key
-	certPEM, privPEM, err := generateSelfSignedCert("127.0.0.1")
-	if err != nil {
-		log.Fatalf("Failed to generate self-signed certificate: %v", err)
+	isValidShortForgeAddr := func(addr string) bool {
+		return strings.Contains(addr, "libp2p.direct/tcp/") && strings.Contains(addr, "/tls/ws")
 	}
 
-	// Load the certificate and key into tls.Certificate
-	cert, err := tls.X509KeyPair(certPEM, privPEM)
-	if err != nil {
-		log.Fatalf("Failed to load key pair: %v", err)
-	}
-
-	// Create a TLS configuration with the certificate
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-	}
-
-	// Wrap the listener with TLS
-	acmeHTTPListener = tls.NewListener(acmeHTTPListener, tlsConfig)
-
-	go func() {
-		http.Serve(acmeHTTPListener, muxHandler)
-	}()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	cas := x509.NewCertPool()
-	cas.AppendCertsFromPEM(certPEM)
-
-	acmeEndpoint := fmt.Sprintf("https://%s%s", acmeHTTPListener.Addr(), pebbleWFE.DirectoryPath)
-	certLoaded := make(chan bool, 1)
-
-	certMgr, err := client.NewP2PForgeCertMgr(
-		client.WithForgeDomain(forge), client.WithForgeRegistrationEndpoint(fmt.Sprintf("http://127.0.0.1:%d", httpPort)), client.WithCAEndpoint(acmeEndpoint), client.WithTrustedRoots(cas),
-		client.WithModifiedForgeRequest(func(req *http.Request) error {
-			req.Host = forgeRegistration
-			req.Header.Set(authForgeHeader, authToken)
-			return nil
-		}),
-		client.WithAllowPrivateForgeAddrs(),
-		client.WithOnCertLoaded(func() {
-			certLoaded <- true
-		}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	certMgr.Start()
-	defer certMgr.Stop()
-
-	h, err := libp2p.New(libp2p.ChainOptions(
-		libp2p.DefaultListenAddrs,
-		libp2p.Transport(tcp.NewTCPTransport),
-		libp2p.Transport(libp2pquic.NewTransport),
-		libp2p.Transport(libp2pwebtransport.New),
-		libp2p.Transport(libp2pwebrtc.New),
-
-		libp2p.ListenAddrStrings(
-			certMgr.AddrStrings()..., // TODO reuse tcp port for ws
-		),
-		libp2p.Transport(libp2pws.New, libp2pws.WithTLSConfig(certMgr.TLSConfig())),
-		libp2p.AddrsFactory(certMgr.AddressFactory()),
-	))
-	if err != nil {
-		t.Fatal(err)
-	}
-	certMgr.ProvideHost(h)
-
-	cp := x509.NewCertPool()
-	cp.AddCert(ca.GetRootCert(0).Cert)
-	tlsCfgWithTestCA := &tls.Config{RootCAs: cp}
-
-	localDnsResolver, err := madns.NewResolver(madns.WithDefaultResolver(&net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{
-				Timeout: time.Second * 5, // Set a timeout for the connection
-			}
-			return d.DialContext(ctx, network, dnsServerAddress)
+	tests := []struct {
+		name             string
+		clientOpts       []client.P2PForgeCertMgrOptions
+		isValidForgeAddr func(addr string) bool
+	}{
+		{
+			name:             "default opts",
+			clientOpts:       []client.P2PForgeCertMgrOptions{},
+			isValidForgeAddr: isValidResolvedForgeAddr,
 		},
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	customResolver, err := madns.NewResolver(madns.WithDomainResolver("libp2p.direct.", localDnsResolver))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	h2, err := libp2p.New(libp2p.Transport(libp2pws.New, libp2pws.WithTLSClientConfig(tlsCfgWithTestCA)),
-		libp2p.MultiaddrResolver(swarm.ResolverFromMaDNS{Resolver: customResolver}))
-	if err != nil {
-		t.Fatal(err)
+		{
+			name:             "explicit WithShortForgeAddrs(true)",
+			clientOpts:       []client.P2PForgeCertMgrOptions{client.WithShortForgeAddrs(true)},
+			isValidForgeAddr: isValidShortForgeAddr,
+		},
+		{
+			name:             "explicit WithShortForgeAddrs(false)",
+			clientOpts:       []client.P2PForgeCertMgrOptions{client.WithShortForgeAddrs(false)},
+			isValidForgeAddr: isValidResolvedForgeAddr,
+		},
 	}
 
-	select {
-	case <-certLoaded:
-	case <-time.After(time.Second * 30):
-		t.Fatal("timed out waiting for certificate")
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 
-	var dialAddr multiaddr.Multiaddr
-	hAddrs := h.Addrs()
-	for _, addr := range hAddrs {
-		as := addr.String()
-		if strings.Contains(as, "p2p-circuit") {
-			continue
-		}
-		if strings.Contains(as, "libp2p.direct/ws") {
-			dialAddr = addr
-			break
-		}
-	}
-	if dialAddr == nil {
-		t.Fatalf("no valid wss addresses: %v", hAddrs)
-	}
+			db := pebbleDB.NewMemoryStore()
+			logger := log.New(os.Stdout, "", 0)
+			ca := pebbleCA.New(logger, db, "", 0, 1, 0)
+			va := pebbleVA.New(logger, 0, 0, false, dnsServerAddress, db)
 
-	if err := h2.Connect(ctx, peer.AddrInfo{ID: h.ID(), Addrs: []multiaddr.Multiaddr{dialAddr}}); err != nil {
-		t.Fatal(err)
+			wfeImpl := pebbleWFE.New(logger, db, va, ca, false, false, 3, 5)
+			muxHandler := wfeImpl.Handler()
+
+			acmeHTTPListener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer acmeHTTPListener.Close()
+
+			// Generate the self-signed certificate and private key
+			certPEM, privPEM, err := generateSelfSignedCert("127.0.0.1")
+			if err != nil {
+				log.Fatalf("Failed to generate self-signed certificate: %v", err)
+			}
+
+			// Load the certificate and key into tls.Certificate
+			cert, err := tls.X509KeyPair(certPEM, privPEM)
+			if err != nil {
+				log.Fatalf("Failed to load key pair: %v", err)
+			}
+
+			// Create a TLS configuration with the certificate
+			tlsConfig := &tls.Config{
+				Certificates: []tls.Certificate{cert},
+			}
+
+			// Wrap the listener with TLS
+			acmeHTTPListener = tls.NewListener(acmeHTTPListener, tlsConfig)
+
+			go func() {
+				http.Serve(acmeHTTPListener, muxHandler)
+			}()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			cas := x509.NewCertPool()
+			cas.AppendCertsFromPEM(certPEM)
+
+			acmeEndpoint := fmt.Sprintf("https://%s%s", acmeHTTPListener.Addr(), pebbleWFE.DirectoryPath)
+			certLoaded := make(chan bool, 1)
+
+			clientOpts := append([]client.P2PForgeCertMgrOptions{
+				client.WithForgeDomain(forge), client.WithForgeRegistrationEndpoint(fmt.Sprintf("http://127.0.0.1:%d", httpPort)), client.WithCAEndpoint(acmeEndpoint), client.WithTrustedRoots(cas),
+				client.WithModifiedForgeRequest(func(req *http.Request) error {
+					req.Host = forgeRegistration
+					req.Header.Set(authForgeHeader, authToken)
+					return nil
+				}),
+				client.WithAllowPrivateForgeAddrs(),
+				client.WithOnCertLoaded(func() {
+					certLoaded <- true
+				}),
+			}, tt.clientOpts...)
+
+			certMgr, err := client.NewP2PForgeCertMgr(clientOpts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			certMgr.Start()
+			defer certMgr.Stop()
+
+			h, err := libp2p.New(libp2p.ChainOptions(
+				libp2p.DefaultListenAddrs,
+				libp2p.Transport(tcp.NewTCPTransport),
+				libp2p.Transport(libp2pquic.NewTransport),
+				libp2p.Transport(libp2pwebtransport.New),
+				libp2p.Transport(libp2pwebrtc.New),
+
+				libp2p.ListenAddrStrings(
+					certMgr.AddrStrings()..., // TODO reuse tcp port for ws
+				),
+				libp2p.Transport(libp2pws.New, libp2pws.WithTLSConfig(certMgr.TLSConfig())),
+				libp2p.AddrsFactory(certMgr.AddressFactory()),
+			))
+			if err != nil {
+				t.Fatal(err)
+			}
+			certMgr.ProvideHost(h)
+
+			cp := x509.NewCertPool()
+			cp.AddCert(ca.GetRootCert(0).Cert)
+			tlsCfgWithTestCA := &tls.Config{RootCAs: cp}
+
+			localDnsResolver, err := madns.NewResolver(madns.WithDefaultResolver(&net.Resolver{
+				PreferGo: true,
+				Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+					d := net.Dialer{
+						Timeout: time.Second * 5, // Set a timeout for the connection
+					}
+					return d.DialContext(ctx, network, dnsServerAddress)
+				},
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			customResolver, err := madns.NewResolver(madns.WithDomainResolver("libp2p.direct.", localDnsResolver))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			h2, err := libp2p.New(libp2p.Transport(libp2pws.New, libp2pws.WithTLSClientConfig(tlsCfgWithTestCA)),
+				libp2p.MultiaddrResolver(swarm.ResolverFromMaDNS{Resolver: customResolver}))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			select {
+			case <-certLoaded:
+			case <-time.After(time.Second * 30):
+				t.Fatal("timed out waiting for certificate")
+			}
+
+			var dialAddr multiaddr.Multiaddr
+			hAddrs := h.Addrs()
+			for _, addr := range hAddrs {
+				as := addr.String()
+				if strings.Contains(as, "p2p-circuit") {
+					continue
+				}
+				if tt.isValidForgeAddr(as) {
+					dialAddr = addr
+					break
+				}
+			}
+			if dialAddr == nil {
+				t.Fatalf("no valid wss addresses: %v", hAddrs)
+			}
+
+			if err := h2.Connect(ctx, peer.AddrInfo{ID: h.ID(), Addrs: []multiaddr.Multiaddr{dialAddr}}); err != nil {
+				t.Fatal(err)
+			}
+
+		})
 	}
 }
 
