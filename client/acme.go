@@ -289,6 +289,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	})
 
 	// Wire up Issuer that does brokered DNS-01 ACME challenge
+	acmeLog := mgrCfg.log.Named("acme-broker")
 	brokeredDNS01Issuer := certmagic.NewACMEIssuer(mgr.certmagic, certmagic.ACMEIssuer{
 		CA:     mgrCfg.caEndpoint,
 		Email:  mgrCfg.userEmail,
@@ -300,10 +301,10 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 			modifyForgeRequest:         mgrCfg.modifyForgeRequest,
 			userAgent:                  mgrCfg.userAgent,
 			allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
-			log:                        mgrCfg.log.Named("dns01solver"),
+			log:                        acmeLog.Named("dns01solver"),
 		},
 		TrustedRoots: mgrCfg.trustedRoots,
-		Logger:       mgr.certmagic.Logger,
+		Logger:       acmeLog.Desugar(),
 	})
 	mgr.certmagic.Issuers = []certmagic.Issuer{brokeredDNS01Issuer}
 
