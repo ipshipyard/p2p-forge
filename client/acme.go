@@ -36,7 +36,7 @@ type P2PForgeCertMgr struct {
 	ProvideHost                func(host.Host)
 	hostFn                     func() host.Host
 	hasHost                    func() bool
-	cfg                        *certmagic.Config
+	certmagic                  *certmagic.Config
 	log                        *zap.SugaredLogger
 	allowPrivateForgeAddresses bool
 	produceShortAddrs          bool
@@ -44,11 +44,6 @@ type P2PForgeCertMgr struct {
 	hasCert     bool // tracking if we've received a certificate
 	certCheckMx sync.RWMutex
 }
-
-var (
-	defaultCertCache   *certmagic.Cache
-	defaultCertCacheMu sync.Mutex
-)
 
 func isRelayAddr(a multiaddr.Multiaddr) bool {
 	found := false
@@ -210,41 +205,13 @@ func WithLogger(log *zap.SugaredLogger) P2PForgeCertMgrOptions {
 	}
 }
 
-// newCertmagicConfig is p2p-forge/client-specific version of
-// certmagic.NewDefault() that ensures we have our own cert cache. This is
-// necessary to ensure cert maintenance spawned by NewCache does not share
-// global certmagic.Default.Storage, and certmagic.Default.Logger and uses
-// storage path specific to p2p-forge, and no other instance of certmagic in
-// golang application.
-func newCertmagicConfig(mgrCfg *P2PForgeCertMgrConfig) *certmagic.Config {
-	clog := mgrCfg.log.Desugar()
-
-	defaultCertCacheMu.Lock()
-	if defaultCertCache == nil {
-		defaultCertCache = certmagic.NewCache(certmagic.CacheOptions{
-			GetConfigForCert: func(certmagic.Certificate) (*certmagic.Config, error) {
-				// default getter that does not depend on certmagic defaults
-				// and respects Config.Storage path
-				return newCertmagicConfig(mgrCfg), nil
-			},
-			Logger: clog,
-		})
-	}
-	certCache := defaultCertCache
-	defaultCertCacheMu.Unlock()
-
-	return certmagic.New(certCache, certmagic.Config{
-		Storage: mgrCfg.storage,
-		Logger:  clog,
-	})
-}
-
 // NewP2PForgeCertMgr handles the creation and management of certificates that are automatically granted by a forge
 // to a libp2p host.
 //
 // Calling this function signifies your acceptance to
 // the CA's Subscriber Agreement and/or Terms of Service. Let's Encrypt is the default CA.
 func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error) {
+	// Init config + apply optional user settings
 	mgrCfg := &P2PForgeCertMgrConfig{}
 	for _, opt := range opts {
 		if err := opt(mgrCfg); err != nil {
@@ -270,14 +237,11 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 			return nil, fmt.Errorf("must specify the forge registration endpoint if using a non-default forge")
 		}
 	}
-
-	const defaultStorageLocation = "p2p-forge-certs"
 	if mgrCfg.storage == nil {
-		mgrCfg.storage = &certmagic.FileStorage{Path: defaultStorageLocation}
+		mgrCfg.storage = &certmagic.FileStorage{Path: DefaultStorageLocation}
 	}
 
-	certCfg := newCertmagicConfig(mgrCfg)
-
+	// Wire up p2p-forge manager instance
 	hostChan := make(chan host.Host, 1)
 	provideHost := func(host host.Host) { hostChan <- host }
 	hasHostChan := make(chan struct{})
@@ -293,39 +257,58 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		defer close(hasHostChan)
 		return <-hostChan
 	})
-
-	myACME := certmagic.NewACMEIssuer(certCfg, certmagic.ACMEIssuer{ // TODO: UX around user passed emails + agreement
-		CA:     mgrCfg.caEndpoint,
-		Email:  mgrCfg.userEmail,
-		Agreed: true,
-		DNS01Solver: &dns01P2PForgeSolver{
-			forgeRegistrationEndpoint:  mgrCfg.forgeRegistrationEndpoint,
-			forgeAuth:                  mgrCfg.forgeAuth,
-			hostFn:                     hostFn,
-			modifyForgeRequest:         mgrCfg.modifyForgeRequest,
-			userAgent:                  mgrCfg.userAgent,
-			allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
-			log:                        mgrCfg.log.Named("dns01solver"),
-		},
-		TrustedRoots: mgrCfg.trustedRoots,
-		Logger:       certCfg.Logger,
-	})
-
-	certCfg.Issuers = []certmagic.Issuer{myACME}
-
 	mgr := &P2PForgeCertMgr{
 		forgeDomain:                mgrCfg.forgeDomain,
 		forgeRegistrationEndpoint:  mgrCfg.forgeRegistrationEndpoint,
 		ProvideHost:                provideHost,
 		hostFn:                     hostFn,
 		hasHost:                    hasHostFn,
-		cfg:                        certCfg,
 		log:                        mgrCfg.log,
 		allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
 		produceShortAddrs:          mgrCfg.produceShortAddrs,
 	}
 
-	certCfg.OnEvent = func(ctx context.Context, event string, data map[string]any) error {
+	// NOTE: callback getter is necessary to avoid circular dependency
+	// but also structure code to avoid issues like https://github.com/ipshipyard/p2p-forge/issues/28
+	configGetter := func(cert certmagic.Certificate) (*certmagic.Config, error) {
+		if mgr.certmagic == nil {
+			return nil, errors.New("P2PForgeCertmgr.certmagic is not set")
+		}
+		return mgr.certmagic, nil
+	}
+
+	magicCache := certmagic.NewCache(certmagic.CacheOptions{
+		GetConfigForCert: configGetter,
+		Logger:           mgrCfg.log.Desugar(),
+	})
+
+	// Wire up final certmagic config by calling upstream New with sanity checks
+	mgr.certmagic = certmagic.New(magicCache, certmagic.Config{
+		Storage: mgrCfg.storage,
+		Logger:  mgrCfg.log.Desugar(),
+	})
+
+	// Wire up Issuer that does brokered DNS-01 ACME challenge
+	brokeredDNS01Issuer := certmagic.NewACMEIssuer(mgr.certmagic, certmagic.ACMEIssuer{
+		CA:     mgrCfg.caEndpoint,
+		Email:  mgrCfg.userEmail,
+		Agreed: true,
+		DNS01Solver: &dns01P2PForgeSolver{
+			forgeRegistrationEndpoint:  mgrCfg.forgeRegistrationEndpoint,
+			forgeAuth:                  mgrCfg.forgeAuth,
+			hostFn:                     mgr.hostFn,
+			modifyForgeRequest:         mgrCfg.modifyForgeRequest,
+			userAgent:                  mgrCfg.userAgent,
+			allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
+			log:                        mgrCfg.log.Named("dns01solver"),
+		},
+		TrustedRoots: mgrCfg.trustedRoots,
+		Logger:       mgr.certmagic.Logger,
+	})
+	mgr.certmagic.Issuers = []certmagic.Issuer{brokeredDNS01Issuer}
+
+	// Wire up onCertLoaded callback
+	mgr.certmagic.OnEvent = func(ctx context.Context, event string, data map[string]any) error {
 		if event == "cached_managed_cert" {
 			sans, ok := data["sans"]
 			if !ok {
@@ -359,17 +342,20 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 }
 
 func (m *P2PForgeCertMgr) Start() error {
-	if m.cfg == nil || m.hostFn == nil {
+	if m.certmagic == nil || m.hostFn == nil {
 		return errors.New("unable to start without a certmagic and libp2p host")
+	}
+	if m.certmagic.Storage == nil {
+		return errors.New("unable to start without a certmagic Cache and Storage set up")
 	}
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	go func() {
 		log := m.log.Named("start")
 		h := m.hostFn()
 		name := certName(h.ID(), m.forgeDomain)
-		certExists := localCertExists(m.ctx, m.cfg, name)
+		certExists := localCertExists(m.ctx, m.certmagic, name)
 		startCertManagement := func() {
-			if err := m.cfg.ManageAsync(m.ctx, []string{name}); err != nil {
+			if err := m.certmagic.ManageAsync(m.ctx, []string{name}); err != nil {
 				log.Error(err)
 			}
 		}
@@ -433,8 +419,9 @@ func (m *P2PForgeCertMgr) Stop() {
 
 // TLSConfig returns a tls.Config that managed by the P2PForgeCertMgr
 func (m *P2PForgeCertMgr) TLSConfig() *tls.Config {
-	tlsCfg := m.cfg.TLSConfig()
+	tlsCfg := m.certmagic.TLSConfig()
 	tlsCfg.NextProtos = nil // remove the ACME ALPN
+	tlsCfg.GetCertificate = m.certmagic.GetCertificate
 	return tlsCfg
 }
 
@@ -449,7 +436,7 @@ func (m *P2PForgeCertMgr) AddrStrings() []string {
 // This should be used with the libp2p.AddrsFactory option to ensure that a libp2p host with forge managed addresses
 // only announces those that are active and valid.
 func (m *P2PForgeCertMgr) AddressFactory() config.AddrsFactory {
-	tlsCfg := m.cfg.TLSConfig()
+	tlsCfg := m.certmagic.TLSConfig()
 	tlsCfg.NextProtos = []string{"h2", "http/1.1"} // remove the ACME ALPN and set the HTTP 1.1 and 2 ALPNs
 
 	return m.createAddrsFactory(m.allowPrivateForgeAddresses, m.produceShortAddrs)
