@@ -126,6 +126,7 @@ func TestMain(m *testing.M) {
 
 // Need to handle <peerID>.forgeDomain to return NODATA rather than NXDOMAIN per https://datatracker.ietf.org/doc/html/rfc8020
 func TestRFC8020(t *testing.T) {
+	t.Parallel()
 	_, pk, err := crypto.GenerateEd25519Key(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -200,6 +201,7 @@ func TestIPSubdomainsNonExistentRecords(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			domain := fmt.Sprintf("%s.%s.%s.", tt.subdomain, peerIDb36, forge)
 			m := new(dns.Msg)
 			m.Question = make([]dns.Question, 1)
@@ -220,6 +222,7 @@ func TestIPSubdomainsNonExistentRecords(t *testing.T) {
 }
 
 func TestSetACMEChallenge(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sk, _, err := crypto.GenerateEd25519Key(rand.Reader)
@@ -332,6 +335,7 @@ func TestIPv4Lookup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			m := new(dns.Msg)
 			m.Question = make([]dns.Question, 1)
 			m.Question[0] = dns.Question{Qclass: dns.ClassINET, Name: fmt.Sprintf("%s.%s.%s.", tt.subdomain, peerIDb36, forge), Qtype: tt.qtype}
@@ -448,6 +452,7 @@ func TestIPv6Lookup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			m := new(dns.Msg)
 			m.Question = make([]dns.Question, 1)
 			m.Question[0] = dns.Question{Qclass: dns.ClassINET, Name: fmt.Sprintf("%s.%s.%s.", tt.subdomain, peerIDb36, forge), Qtype: tt.qtype}
@@ -492,14 +497,25 @@ func TestLibp2pACMEE2E(t *testing.T) {
 	}
 
 	tests := []struct {
-		name             string
-		clientOpts       []client.P2PForgeCertMgrOptions
-		isValidForgeAddr func(addr string) bool
+		name                 string
+		clientOpts           []client.P2PForgeCertMgrOptions
+		isValidForgeAddr     func(addr string) bool
+		caCertValidityPeriod uint64 // 0 means default from letsencrypt/pebble/ca/v2 will be used
+		awaitOnCertRenewed   bool   // include renewal test
 	}{
 		{
 			name:             "default opts",
 			clientOpts:       []client.P2PForgeCertMgrOptions{},
 			isValidForgeAddr: isValidResolvedForgeAddr,
+		},
+		{
+			name: "expired cert gets renewed and triggers OnCertRenewed",
+			clientOpts: []client.P2PForgeCertMgrOptions{
+				client.WithRenewCheckInterval(5 * time.Second),
+			},
+			isValidForgeAddr:     isValidResolvedForgeAddr,
+			caCertValidityPeriod: 30, // letsencrypt/pebble/v2/ca uses int as seconds
+			awaitOnCertRenewed:   true,
 		},
 		{
 			name:             "explicit WithShortForgeAddrs(true)",
@@ -515,10 +531,11 @@ func TestLibp2pACMEE2E(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
 			db := pebbleDB.NewMemoryStore()
 			logger := log.New(os.Stdout, "", 0)
-			ca := pebbleCA.New(logger, db, "", 0, 1, 0)
+			ca := pebbleCA.New(logger, db, "", 0, 1, tt.caCertValidityPeriod)
 			va := pebbleVA.New(logger, 0, 0, false, dnsServerAddress, db)
 
 			wfeImpl := pebbleWFE.New(logger, db, va, ca, false, false, 3, 5)
@@ -530,7 +547,7 @@ func TestLibp2pACMEE2E(t *testing.T) {
 			}
 			defer acmeHTTPListener.Close()
 
-			// Generate the self-signed certificate and private key
+			// Generate the self-signed certificate and private key for mocked ACME endpoint
 			certPEM, privPEM, err := generateSelfSignedCert("127.0.0.1")
 			if err != nil {
 				log.Fatalf("Failed to generate self-signed certificate: %v", err)
@@ -562,6 +579,7 @@ func TestLibp2pACMEE2E(t *testing.T) {
 
 			acmeEndpoint := fmt.Sprintf("https://%s%s", acmeHTTPListener.Addr(), pebbleWFE.DirectoryPath)
 			certLoaded := make(chan bool, 1)
+			certRenewed := make(chan bool, 1)
 
 			clientOpts := append([]client.P2PForgeCertMgrOptions{
 				client.WithForgeDomain(forge), client.WithForgeRegistrationEndpoint(fmt.Sprintf("http://127.0.0.1:%d", httpPort)), client.WithCAEndpoint(acmeEndpoint), client.WithTrustedRoots(cas),
@@ -573,6 +591,9 @@ func TestLibp2pACMEE2E(t *testing.T) {
 				client.WithAllowPrivateForgeAddrs(),
 				client.WithOnCertLoaded(func() {
 					certLoaded <- true
+				}),
+				client.WithOnCertRenewed(func() {
+					certRenewed <- true
 				}),
 			}, tt.clientOpts...)
 
@@ -654,6 +675,14 @@ func TestLibp2pACMEE2E(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			if tt.awaitOnCertRenewed {
+				select {
+				case <-certRenewed:
+				case <-time.After(30 * time.Second):
+					t.Fatal("timed out waiting for certificate renewal")
+				}
+			}
+
 		})
 	}
 }
@@ -672,10 +701,10 @@ func generateSelfSignedCert(ipAddr string) ([]byte, []byte, error) {
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization: []string{"My Organization"},
+			Organization: []string{"Test Mocked ACME Endpoint"},
 		},
 		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(365 * 24 * time.Hour), // Valid for 1 year
+		NotAfter:              time.Now().Add(1 * time.Hour),
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,

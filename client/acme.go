@@ -79,9 +79,11 @@ type P2PForgeCertMgrConfig struct {
 	storage                    certmagic.Storage
 	modifyForgeRequest         func(r *http.Request) error
 	onCertLoaded               func()
+	onCertRenewed              func()
 	log                        *zap.SugaredLogger
 	allowPrivateForgeAddresses bool
 	produceShortAddrs          bool
+	renewCheckInterval         time.Duration
 }
 
 type P2PForgeCertMgrOptions func(*P2PForgeCertMgrConfig) error
@@ -167,6 +169,22 @@ func WithModifiedForgeRequest(fn func(req *http.Request) error) P2PForgeCertMgrO
 func WithTrustedRoots(trustedRoots *x509.CertPool) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
 		config.trustedRoots = trustedRoots
+		return nil
+	}
+}
+
+// WithOnCertRenewed is optional callback executed on cert renewal event
+func WithOnCertRenewed(fn func()) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.onCertRenewed = fn
+		return nil
+	}
+}
+
+// WithRenewCheckInterval is meant for testing
+func WithRenewCheckInterval(renewCheckInterval time.Duration) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.renewCheckInterval = renewCheckInterval
 		return nil
 	}
 }
@@ -278,8 +296,9 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	}
 
 	magicCache := certmagic.NewCache(certmagic.CacheOptions{
-		GetConfigForCert: configGetter,
-		Logger:           mgrCfg.log.Desugar(),
+		GetConfigForCert:   configGetter,
+		RenewCheckInterval: mgrCfg.renewCheckInterval,
+		Logger:             mgrCfg.log.Desugar(),
 	})
 
 	// Wire up final certmagic config by calling upstream New with sanity checks
@@ -336,6 +355,18 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 			}
 			return nil
 		}
+
+		// Execute user function for on certificate cert renewal
+		if event == "cert_obtained" && mgrCfg.onCertRenewed != nil {
+			if renewal, ok := data["renewal"].(bool); ok && renewal {
+				name := certName(hostFn().ID(), mgrCfg.forgeDomain)
+				if id, ok := data["identifier"].(string); ok && id == name {
+					mgrCfg.onCertRenewed()
+				}
+			}
+			return nil
+		}
+
 		return nil
 	}
 
