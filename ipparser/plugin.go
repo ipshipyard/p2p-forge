@@ -45,7 +45,9 @@ type ipParser struct {
 	ForgeDomain string
 }
 
-const ttl = 24 * time.Hour
+// The TTL for self-referential ip.peerid.etld A/AAAA records can be as long as possible.
+// We will be increasing this over time, as infrastructure ossifies.
+const ttl = 7 * 24 * time.Hour
 
 // ServeDNS implements the plugin.Handler interface.
 func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {

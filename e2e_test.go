@@ -262,7 +262,7 @@ func TestSetACMEChallenge(t *testing.T) {
 	if r.Rcode != dns.RcodeSuccess || len(r.Answer) == 0 {
 		t.Fatalf("Expected successful reply, got %s", dns.RcodeToString[r.Rcode])
 	}
-	expectedAnswer := fmt.Sprintf(`%s	3600	IN	TXT	"%s"`, m.Question[0].Name, testChallenge)
+	expectedAnswer := fmt.Sprintf(`%s	60	IN	TXT	"%s"`, m.Question[0].Name, testChallenge)
 	if r.Answer[0].String() != expectedAnswer {
 		t.Fatalf("Expected %s reply, got %s", expectedAnswer, r.Answer[0].String())
 	}
@@ -363,7 +363,7 @@ func TestIPv4Lookup(t *testing.T) {
 				return
 			}
 
-			expectedAnswer := fmt.Sprintf(`%s	86400	IN	A	%s`, m.Question[0].Name, tt.expectedAddress)
+			expectedAnswer := fmt.Sprintf(`%s	604800	IN	A	%s`, m.Question[0].Name, tt.expectedAddress)
 			if r.Answer[0].String() != expectedAnswer {
 				t.Fatalf("Expected %s reply, got %s", expectedAnswer, r.Answer[0].String())
 			}
@@ -480,7 +480,7 @@ func TestIPv6Lookup(t *testing.T) {
 				return
 			}
 
-			expectedAnswer := fmt.Sprintf(`%s	86400	IN	AAAA	%s`, m.Question[0].Name, tt.expectedAddress)
+			expectedAnswer := fmt.Sprintf(`%s	604800	IN	AAAA	%s`, m.Question[0].Name, tt.expectedAddress)
 			if r.Answer[0].String() != expectedAnswer {
 				t.Fatalf("Expected %s reply, got %s", expectedAnswer, r.Answer[0].String())
 			}
