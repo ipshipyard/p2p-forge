@@ -150,7 +150,8 @@ func (c *acmeWriter) OnStartup() error {
 				return
 			}
 
-			if err := testAddresses(r.Context(), peerID, typedBody.Addresses); err != nil {
+			httpUserAgent := r.Header.Get("User-Agent")
+			if err := testAddresses(r.Context(), peerID, typedBody.Addresses, httpUserAgent); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(fmt.Sprintf("error testing addresses: %s", err)))
 				return
@@ -214,10 +215,11 @@ func withRequestLogger(next http.Handler) http.Handler {
 	})
 }
 
-func testAddresses(ctx context.Context, p peer.ID, addrs []string) error {
+func testAddresses(ctx context.Context, p peer.ID, addrs []string, httpUserAgent string) error {
+	agentVersion := agentType(httpUserAgent)
 	h, err := libp2p.New(libp2p.NoListenAddrs, libp2p.DisableRelay())
 	if err != nil {
-		peerProbeCount.WithLabelValues("error", "unknown").Add(1)
+		peerProbeCount.WithLabelValues("error", agentVersion).Add(1)
 		return err
 	}
 	defer h.Close()
@@ -226,7 +228,7 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string) error {
 	for _, addr := range addrs {
 		ma, err := multiaddr.NewMultiaddr(addr)
 		if err != nil {
-			peerProbeCount.WithLabelValues("error", "unknown").Add(1)
+			peerProbeCount.WithLabelValues("error", agentVersion).Add(1)
 			return err
 		}
 		mas = append(mas, ma)
@@ -234,15 +236,14 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string) error {
 
 	err = h.Connect(ctx, peer.AddrInfo{ID: p, Addrs: mas})
 	if err != nil {
-		peerProbeCount.WithLabelValues("error", "unknown").Add(1)
+		peerProbeCount.WithLabelValues("error", agentVersion).Add(1)
 		return err
 	}
 
 	// TODO: Do we need to listen on the identify event instead?
-	// TODO: Where do we want to record this information if anywhere?
-	var agentVersion string
 	if v, err := h.Peerstore().Get(p, "AgentVersion"); err == nil {
 		if vs, ok := v.(string); ok {
+			// if we had successful libp2p identify we prefer agentVersion from it
 			agentVersion = vs
 		}
 	}
@@ -255,18 +256,23 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string) error {
 // libp2p clients can set agent version to arbitrary strings,
 // and the metric labels have to have a bound cardinality
 func agentType(agentVersion string) string {
-	if strings.HasPrefix(agentVersion, "kubo/") {
+	switch {
+	case strings.HasPrefix(agentVersion, "kubo/"):
 		return "kubo"
-	}
-	if strings.HasPrefix(agentVersion, "helia/") {
+	case strings.HasPrefix(agentVersion, "helia/"):
 		return "helia"
-	}
-	// TODO:  revisit once js0libp2p cleans up default user agents to something unique and not "libp2p/"
-	if strings.HasPrefix(agentVersion, "libp2p/") || strings.HasPrefix(agentVersion, "js-libp2p/") {
+	case strings.HasPrefix(agentVersion, "libp2p/") || strings.HasPrefix(agentVersion, "js-libp2p/"): // TODO:  revisit once js0libp2p cleans up default user agents to something unique and not "libp2p/"
 		return "js-libp2p"
-	}
-	if strings.Contains(agentVersion, "go-libp2p") {
+	case strings.Contains(agentVersion, "go-libp2p"):
 		return "go-libp2p"
+	case strings.Contains(agentVersion, "Go-http-client"):
+		return "go-http-client"
+	case strings.Contains(agentVersion, "python-requests"):
+		return "python-requests"
+	case strings.HasPrefix(agentVersion, "curl"):
+		return "curl"
+	case strings.HasPrefix(agentVersion, "Mozilla/"): // most of browsers make requests with user-agent  header value starting with
+		return "browser"
 	}
 	return "other"
 }
