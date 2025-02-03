@@ -500,7 +500,7 @@ func TestLibp2pACMEE2E(t *testing.T) {
 		name                 string
 		clientOpts           []client.P2PForgeCertMgrOptions
 		isValidForgeAddr     func(addr string) bool
-		caCertValidityPeriod uint64 // 0 means default from letsencrypt/pebble/ca/v2 will be used
+		caCertValidityPeriod uint64 // 0 means default from letsencrypt/pebble/ca/v2#defaultValidityPeriod will be used
 		awaitOnCertRenewed   bool   // include renewal test
 	}{
 		{
@@ -535,7 +535,8 @@ func TestLibp2pACMEE2E(t *testing.T) {
 
 			db := pebbleDB.NewMemoryStore()
 			logger := log.New(os.Stdout, "", 0)
-			ca := pebbleCA.New(logger, db, "", 0, 1, tt.caCertValidityPeriod)
+			caProfiles := map[string]pebbleCA.Profile{"default": {Description: "The test profile for " + tt.name, ValidityPeriod: tt.caCertValidityPeriod}}
+			ca := pebbleCA.New(logger, db, "", 0, 1, caProfiles)
 			va := pebbleVA.New(logger, 0, 0, false, dnsServerAddress, db)
 
 			wfeImpl := pebbleWFE.New(logger, db, va, ca, false, false, 3, 5)
