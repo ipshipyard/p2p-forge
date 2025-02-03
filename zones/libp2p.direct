@@ -3,7 +3,7 @@ $ORIGIN libp2p.direct.
 
 ;; SOA Records
 @                               86400   IN      SOA     aws1.libp2p.direct. domains.ipshipyard.com. (
-                                                        2025011601  ; serial
+                                                        2025020101  ; serial
                                                         86400       ; refresh
                                                         2400        ; retry
                                                         604800      ; expire
@@ -41,9 +41,6 @@ ns1.libp2p.direct.              86400   IN      AAAA    2604:2dc0:101:100::265
 ;; dev2
 ns2.libp2p.direct.              86400   IN      A       15.204.28.76
 ns2.libp2p.direct.              86400   IN      AAAA    2604:2dc0:202:200::64e
-
-;; TODO: ns3 was renamed to aws1, fine to remove once we migrate away from ns1 as primary
-ns3.libp2p.direct.              86400   IN      CNAME   aws1.libp2p.direct.
 
 ;; Limit allowed CAs to Let's Encrypt, we discussed feasibility with them and no concerns were raised:
 ;; https://community.letsencrypt.org/t/feedback-on-raising-certificates-per-registered-domain-to-enable-peer-to-peer-networking/223003
