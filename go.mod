@@ -15,7 +15,7 @@ require (
 	github.com/ipfs/go-log/v2 v2.5.1
 	github.com/joho/godotenv v1.5.1
 	github.com/letsencrypt/pebble/v2 v2.7.0
-	github.com/libp2p/go-libp2p v0.38.1
+	github.com/libp2p/go-libp2p v0.38.2
 	github.com/mholt/acmez/v3 v3.0.0
 	github.com/miekg/dns v1.1.62
 	github.com/multiformats/go-multiaddr v0.14.0
