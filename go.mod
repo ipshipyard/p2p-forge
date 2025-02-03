@@ -4,7 +4,7 @@ module github.com/ipshipyard/p2p-forge
 go 1.22.0
 
 require (
-	github.com/aws/aws-sdk-go v1.55.5
+	github.com/aws/aws-sdk-go v1.55.6
 	github.com/caddyserver/certmagic v0.21.6
 	github.com/coredns/caddy v1.1.1
 	github.com/coredns/coredns v1.11.3
@@ -14,8 +14,8 @@ require (
 	github.com/ipfs/go-ds-dynamodb v0.2.0
 	github.com/ipfs/go-log/v2 v2.5.1
 	github.com/joho/godotenv v1.5.1
-	github.com/letsencrypt/pebble/v2 v2.6.0
-	github.com/libp2p/go-libp2p v0.38.1
+	github.com/letsencrypt/pebble/v2 v2.7.0
+	github.com/libp2p/go-libp2p v0.38.2
 	github.com/mholt/acmez/v3 v3.0.0
 	github.com/miekg/dns v1.1.62
 	github.com/multiformats/go-multiaddr v0.14.0
@@ -45,7 +45,7 @@ require (
 	github.com/flynn/go-shlex v0.0.0-20150515145356-3f9db97f8568 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
 	github.com/francoispqt/gojay v1.2.13 // indirect
-	github.com/go-jose/go-jose/v4 v4.0.1 // indirect
+	github.com/go-jose/go-jose/v4 v4.0.4 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
@@ -140,7 +140,7 @@ require (
 	golang.org/x/sync v0.10.0 // indirect
 	golang.org/x/sys v0.29.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
-	golang.org/x/tools v0.28.0 // indirect
+	golang.org/x/tools v0.29.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240318140521-94a12d6c2237 // indirect
 	google.golang.org/grpc v1.63.2 // indirect
 	google.golang.org/protobuf v1.36.0 // indirect
