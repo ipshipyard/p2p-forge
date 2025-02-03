@@ -259,9 +259,11 @@ func agentType(agentVersion string) string {
 	switch {
 	case strings.HasPrefix(agentVersion, "kubo/"):
 		return "kubo"
+	case strings.HasPrefix(agentVersion, "go-ipfs/"): // not kubo, but maybe storm ;)
+		return "go-ipfs"
 	case strings.HasPrefix(agentVersion, "helia/"):
 		return "helia"
-	case strings.HasPrefix(agentVersion, "libp2p/") || strings.HasPrefix(agentVersion, "js-libp2p/"): // TODO:  revisit once js0libp2p cleans up default user agents to something unique and not "libp2p/"
+	case strings.HasPrefix(agentVersion, "libp2p/") || strings.Contains(agentVersion, "js-libp2p/"):
 		return "js-libp2p"
 	case strings.Contains(agentVersion, "go-libp2p"):
 		return "go-libp2p"
@@ -269,8 +271,10 @@ func agentType(agentVersion string) string {
 		return "go-http-client"
 	case strings.Contains(agentVersion, "python-requests"):
 		return "python-requests"
-	case strings.HasPrefix(agentVersion, "curl"):
+	case strings.HasPrefix(agentVersion, "curl/"):
 		return "curl"
+	case agentVersion == "node": // sent when running via 'node poc.js' (not matching prefix as it is too generic, could match node-foo)
+		return "node"
 	case strings.HasPrefix(agentVersion, "Mozilla/"): // most of browsers make requests with user-agent  header value starting with
 		return "browser"
 	}
