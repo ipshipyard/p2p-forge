@@ -260,9 +260,9 @@ func TestSetACMEChallenge(t *testing.T) {
 		t.Fatalf("Could not send message: %s", err)
 	}
 	if r.Rcode != dns.RcodeSuccess || len(r.Answer) == 0 {
-		t.Fatalf("Expected successful reply, got %s", dns.RcodeToString[r.Rcode])
+		t.Fatalf("Expected successful reply with TXT value, got empty %s", dns.RcodeToString[r.Rcode])
 	}
-	expectedAnswer := fmt.Sprintf(`%s	60	IN	TXT	"%s"`, m.Question[0].Name, testChallenge)
+	expectedAnswer := fmt.Sprintf(`%s	10	IN	TXT	"%s"`, m.Question[0].Name, testChallenge)
 	if r.Answer[0].String() != expectedAnswer {
 		t.Fatalf("Expected %s reply, got %s", expectedAnswer, r.Answer[0].String())
 	}
