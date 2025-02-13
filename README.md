@@ -4,7 +4,7 @@
 > An Authoritative DNS server and HTTP+libp2p API for distributing DNS subdomains with CA-signed TLS certificates to libp2p peers.
 
 <a href="http://ipshipyard.com/"><img align="right" src="https://github.com/user-attachments/assets/39ed3504-bb71-47f6-9bf8-cb9a1698f272" /></a>
-This repository includes golang client and the backend of AutoTLS feature (see [blog.libp2p.io/autotls](https://blog.libp2p.io/autotls/) and [`AutoTLS` in Kubo](https://github.com/ipfs/kubo/blob/master/docs/config.md#autotls).  
+This repository includes golang client and the backend of AutoTLS feature (see [blog.libp2p.io/autotls](https://blog.libp2p.io/autotls/) and [`AutoTLS` in Kubo](https://github.com/ipfs/kubo/blob/master/docs/config.md#autotls)).  
 A public utility instance for libp2p at `libp2p.direct` is maintained by [Interplanetary Shipyard](https://github.com/ipshipyard).
 
 - [High-level Design](#high-level-design)
