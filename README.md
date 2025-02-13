@@ -1,11 +1,11 @@
 # p2p-forge
 
 
-> An Authoritative DNS server and API for distributing DNS subdomains with CA-signed TLS certificates to libp2p peers.
+> An Authoritative DNS server and HTTP+libp2p API for distributing DNS subdomains with CA-signed TLS certificates to libp2p peers.
 
 <a href="http://ipshipyard.com/"><img align="right" src="https://github.com/user-attachments/assets/39ed3504-bb71-47f6-9bf8-cb9a1698f272" /></a>
-This is the backend of [`AutoTLS` feature introduced in Kubo 0.32.0-rc1](https://github.com/ipfs/kubo/blob/master/docs/config.md#autotls).  
-It is deployed at `libp2p.direct` and maintained by [Interplanetary Shipyard](https://github.com/ipshipyard).
+This repository includes golang client and the backend of AutoTLS feature (see [blog.libp2p.io/autotls](https://blog.libp2p.io/autotls/) and [`AutoTLS` in Kubo](https://github.com/ipfs/kubo/blob/master/docs/config.md#autotls)).  
+A public utility instance for libp2p at `libp2p.direct` is maintained by [Interplanetary Shipyard](https://github.com/ipshipyard).
 
 - [High-level Design](#high-level-design)
   - [Peer Authentication and DNS-01 Challenge and Certificate Issuance](#peer-authentication-and-dns-01-challenge-and-certificate-issuance)
