@@ -1,7 +1,7 @@
 module github.com/ipshipyard/p2p-forge
 
 // NOTE: p2p-forge should match go.mod of latest go-libp2p release
-go 1.22.0
+go 1.23
 
 require (
 	github.com/aws/aws-sdk-go v1.55.6
