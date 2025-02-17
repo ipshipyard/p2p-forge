@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -81,6 +82,7 @@ type P2PForgeCertMgrConfig struct {
 	onCertLoaded               func()
 	onCertRenewed              func()
 	log                        *zap.SugaredLogger
+	resolver                   *net.Resolver
 	allowPrivateForgeAddresses bool
 	produceShortAddrs          bool
 	renewCheckInterval         time.Duration
@@ -223,6 +225,15 @@ func WithLogger(log *zap.SugaredLogger) P2PForgeCertMgrOptions {
 	}
 }
 
+// WithResolver allows passing custom DNS resolver to be used for DNS-01 checks.
+// By default [net.DefaultResolver] is used.
+func WithResolver(resolver *net.Resolver) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.resolver = resolver
+		return nil
+	}
+}
+
 // NewP2PForgeCertMgr handles the creation and management of certificates that are automatically granted by a forge
 // to a libp2p host.
 //
@@ -257,6 +268,11 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	}
 	if mgrCfg.storage == nil {
 		mgrCfg.storage = &certmagic.FileStorage{Path: DefaultStorageLocation}
+	}
+
+	// Wire up resolver for verifying DNS-01 TXT record got published correctly
+	if mgrCfg.resolver == nil {
+		mgrCfg.resolver = net.DefaultResolver
 	}
 
 	// Wire up p2p-forge manager instance
@@ -321,6 +337,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 			userAgent:                  mgrCfg.userAgent,
 			allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
 			log:                        acmeLog.Named("dns01solver"),
+			resolver:                   mgrCfg.resolver,
 		},
 		TrustedRoots: mgrCfg.trustedRoots,
 		Logger:       acmeLog.Desugar(),
@@ -516,13 +533,53 @@ type dns01P2PForgeSolver struct {
 	userAgent                  string
 	allowPrivateForgeAddresses bool
 	log                        *zap.SugaredLogger
+	resolver                   *net.Resolver
 }
 
 func (d *dns01P2PForgeSolver) Wait(ctx context.Context, challenge acme.Challenge) error {
-	d.log.Debugw("waiting for DNS-01 TXT record to be set")
-	// TODO: query the authoritative DNS
-	time.Sleep(time.Second * 5)
-	return nil
+	// Try as long the challenge remains valid.
+	// This acts both as sensible timeout and as a way to rate-limit clients using this library.
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
+	// Extract the domain and expected TXT record value from the challenge
+	domain := fmt.Sprintf("_acme-challenge.%s", challenge.Identifier.Value)
+	expectedTXT := challenge.DNS01KeyAuthorization()
+	d.log.Infow("waiting for DNS-01 TXT record to be set", "domain", domain)
+
+	// Check if DNS-01 TXT record is correctly published by the p2p-forge
+	// backend. This step ensures we are good citizens: we don't want to move
+	// further and bother ACME endpoint with work if we are not confident
+	// DNS-01 chalelnge will be successful.
+	// We check fast, with backoff to avoid spamming DNS.
+	pollInterval := 1 * time.Second
+	maxPollInterval := 1 * time.Minute
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for DNS-01 TXT record to be set at %q: %v", domain, ctx.Err())
+		case <-ticker.C:
+			pollInterval *= 2
+			if pollInterval > maxPollInterval {
+				pollInterval = maxPollInterval
+			}
+			ticker.Reset(pollInterval)
+			txtRecords, err := d.resolver.LookupTXT(ctx, domain)
+			if err != nil {
+				d.log.Debugw("dns lookup error", "domain", domain, "error", err)
+				continue
+			}
+			for _, txt := range txtRecords {
+				if txt == expectedTXT {
+					d.log.Infow("confirmed TXT record for DNS-01 challenge is set", "domain", domain)
+					return nil
+				}
+			}
+			d.log.Debugw("no matching TXT record found yet, sleeping", "domain", domain)
+		}
+	}
 }
 
 func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challenge) error {
