@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/caddyserver/certmagic"
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/ipshipyard/p2p-forge/client"
@@ -39,7 +40,7 @@ import (
 	madns "github.com/multiformats/go-multiaddr-dns"
 	"github.com/multiformats/go-multibase"
 
-	// Load CoreDNS + p2p-forge plugins
+	// Load CoreDNS dnsserver.Directives + p2p-forge plugins
 	_ "github.com/ipshipyard/p2p-forge/plugins"
 
 	pebbleCA "github.com/letsencrypt/pebble/v2/ca"
@@ -59,7 +60,7 @@ var dnsServerAddress string
 var httpPort int
 
 func TestMain(m *testing.M) {
-	tmpDir, err := os.MkdirTemp("", "p2p-forge")
+	tmpDir, err := os.MkdirTemp("", "p2p-forge-e2e-test")
 	if err != nil {
 		fmt.Println(err.Error())
 		os.Exit(1)
@@ -85,15 +86,20 @@ func TestMain(m *testing.M) {
 
 	dnsserver.Directives = []string{
 		"log",
+		// "any", - we dont block any in tests, so we can inspect all record types via ANY query
+		"errors",
 		"whoami",
 		"startup",
 		"shutdown",
 		"ipparser",
+		"file",
 		"acme",
 	}
 
+	// file zones/%s
 	corefile := fmt.Sprintf(`.:0 {
 		log
+		errors
 		ipparser %s
 		acme %s {
 			registration-domain %s listen-address=:%d external-tls=true
@@ -104,9 +110,12 @@ func TestMain(m *testing.M) {
 	instance, err := caddy.Start(NewInput(corefile))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
+	// Use mocked DNS for checking TXT record from DNS-01
 	dnsServerAddress = instance.Servers()[0].LocalAddr().String()
+	certmagic.DefaultACME.Resolver = dnsServerAddress
 
 	m.Run()
 
@@ -575,6 +584,18 @@ func TestLibp2pACMEE2E(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
+			// Create DNS resolver to be used in tests
+			resolver := &net.Resolver{
+				PreferGo: true,
+				Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+					d := net.Dialer{
+						Timeout: time.Second * 1,
+					}
+					log.Printf("p2p-forge/client DNS query to p2p-forge at %s (instead of %s)\n", dnsServerAddress, address)
+					return d.DialContext(ctx, network, dnsServerAddress)
+				},
+			}
+
 			cas := x509.NewCertPool()
 			cas.AppendCertsFromPEM(certPEM)
 
@@ -596,6 +617,7 @@ func TestLibp2pACMEE2E(t *testing.T) {
 				client.WithOnCertRenewed(func() {
 					certRenewed <- true
 				}),
+				client.WithResolver(resolver),
 			}, tt.clientOpts...)
 
 			certMgr, err := client.NewP2PForgeCertMgr(clientOpts...)
@@ -604,6 +626,15 @@ func TestLibp2pACMEE2E(t *testing.T) {
 			}
 			certMgr.Start()
 			defer certMgr.Stop()
+
+			madnsResolver, err := madns.NewResolver(madns.WithDefaultResolver(resolver))
+			if err != nil {
+				t.Fatal(err)
+			}
+			customResolver, err := madns.NewResolver(madns.WithDomainResolver("libp2p.direct.", madnsResolver))
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			h, err := libp2p.New(libp2p.ChainOptions(
 				libp2p.DefaultListenAddrs,
@@ -617,6 +648,7 @@ func TestLibp2pACMEE2E(t *testing.T) {
 				),
 				libp2p.Transport(libp2pws.New, libp2pws.WithTLSConfig(certMgr.TLSConfig())),
 				libp2p.AddrsFactory(certMgr.AddressFactory()),
+				libp2p.MultiaddrResolver(swarm.ResolverFromMaDNS{Resolver: customResolver}),
 			))
 			if err != nil {
 				t.Fatal(err)
@@ -626,23 +658,6 @@ func TestLibp2pACMEE2E(t *testing.T) {
 			cp := x509.NewCertPool()
 			cp.AddCert(ca.GetRootCert(0).Cert)
 			tlsCfgWithTestCA := &tls.Config{RootCAs: cp}
-
-			localDnsResolver, err := madns.NewResolver(madns.WithDefaultResolver(&net.Resolver{
-				PreferGo: true,
-				Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-					d := net.Dialer{
-						Timeout: time.Second * 5, // Set a timeout for the connection
-					}
-					return d.DialContext(ctx, network, dnsServerAddress)
-				},
-			}))
-			if err != nil {
-				t.Fatal(err)
-			}
-			customResolver, err := madns.NewResolver(madns.WithDomainResolver("libp2p.direct.", localDnsResolver))
-			if err != nil {
-				t.Fatal(err)
-			}
 
 			h2, err := libp2p.New(libp2p.Transport(libp2pws.New, libp2pws.WithTLSClientConfig(tlsCfgWithTestCA)),
 				libp2p.MultiaddrResolver(swarm.ResolverFromMaDNS{Resolver: customResolver}))
