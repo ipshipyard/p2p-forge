@@ -495,25 +495,27 @@ func TestLibp2pACMEE2E(t *testing.T) {
 	isValidShortForgeAddr := func(addr string) bool {
 		return strings.Contains(addr, "libp2p.direct/tcp/") && strings.Contains(addr, "/tls/ws")
 	}
+	defaultAddrCheck := isValidResolvedForgeAddr
 
 	tests := []struct {
-		name                 string
-		clientOpts           []client.P2PForgeCertMgrOptions
-		isValidForgeAddr     func(addr string) bool
-		caCertValidityPeriod uint64 // 0 means default from letsencrypt/pebble/ca/v2#defaultValidityPeriod will be used
-		awaitOnCertRenewed   bool   // include renewal test
+		name                    string
+		clientOpts              []client.P2PForgeCertMgrOptions
+		isValidForgeAddr        func(addr string) bool
+		caCertValidityPeriod    uint64        // 0 means default from letsencrypt/pebble/ca/v2#defaultValidityPeriod will be used
+		awaitOnCertRenewed      bool          // include renewal test
+		expectRegistrationDelay time.Duration // include delayed registration test that fails if registration occured sooner
 	}{
 		{
 			name:             "default opts",
 			clientOpts:       []client.P2PForgeCertMgrOptions{},
-			isValidForgeAddr: isValidResolvedForgeAddr,
+			isValidForgeAddr: defaultAddrCheck,
 		},
 		{
 			name: "expired cert gets renewed and triggers OnCertRenewed",
 			clientOpts: []client.P2PForgeCertMgrOptions{
 				client.WithRenewCheckInterval(5 * time.Second),
 			},
-			isValidForgeAddr:     isValidResolvedForgeAddr,
+			isValidForgeAddr:     defaultAddrCheck,
 			caCertValidityPeriod: 30, // letsencrypt/pebble/v2/ca uses int as seconds
 			awaitOnCertRenewed:   true,
 		},
@@ -526,6 +528,12 @@ func TestLibp2pACMEE2E(t *testing.T) {
 			name:             "explicit WithShortForgeAddrs(false)",
 			clientOpts:       []client.P2PForgeCertMgrOptions{client.WithShortForgeAddrs(false)},
 			isValidForgeAddr: isValidResolvedForgeAddr,
+		},
+		{
+			name:                    "WithRegistrationDelay() produces a delay",
+			clientOpts:              []client.P2PForgeCertMgrOptions{client.WithRegistrationDelay(15 * time.Second)},
+			isValidForgeAddr:        defaultAddrCheck,
+			expectRegistrationDelay: 15 * time.Second,
 		},
 	}
 
@@ -602,6 +610,7 @@ func TestLibp2pACMEE2E(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			start := time.Now()
 			certMgr.Start()
 			defer certMgr.Stop()
 
@@ -652,8 +661,17 @@ func TestLibp2pACMEE2E(t *testing.T) {
 
 			select {
 			case <-certLoaded:
-			case <-time.After(time.Second * 30):
+			case <-time.After(time.Second*30 + tt.expectRegistrationDelay):
 				t.Fatal("timed out waiting for certificate")
+			}
+
+			// optional WithRegistrationDelay test
+			// confirms registration took longer than the delay defined
+			if tt.expectRegistrationDelay != 0 {
+				remainingDelay := tt.expectRegistrationDelay - time.Since(start)
+				if remainingDelay > 0 {
+					t.Fatalf("WithRegistrationDelay was expected to delay registration by %s", tt.expectRegistrationDelay)
+				}
 			}
 
 			var dialAddr multiaddr.Multiaddr
