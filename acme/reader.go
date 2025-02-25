@@ -58,7 +58,7 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 		}
 
 		val, err := p.Datastore.Get(ctx, datastore.NewKey(peerID.String()))
-		if err != nil {
+		if err != nil || len(val) == 0 {
 			// return "empty" TXT record to have control over TTL that does not depend on minimal TTL from SOA
 			// (avoiding issue described in https://github.com/ipshipyard/p2p-forge/issues/52)
 			answers = append(answers, &dns.TXT{
