@@ -22,6 +22,9 @@ const (
 
 	// The TTL for the _acme-challenge TXT record is as short as possible
 	txtTTL = uint32(10) // seconds
+
+	// TXT value returned when broker has no DNS-01 value yet
+	DNS01NotSetValue = "not set yet"
 )
 
 // ServeDNS implements the plugin.Handler interface.
@@ -68,7 +71,7 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 					Class:  dns.ClassINET,
 					Ttl:    txtTTL,
 				},
-				Txt: []string{"not set yet"},
+				Txt: []string{DNS01NotSetValue},
 			})
 			// track "empty" TXT separately from NODATA (we do return a record, but DNS-01 value is not set yet)
 			dns01ResponseCount.WithLabelValues("TXT-EMPTY").Add(1)

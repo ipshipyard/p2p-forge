@@ -25,6 +25,7 @@ import (
 	"github.com/caddyserver/certmagic"
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
+	p2pacme "github.com/ipshipyard/p2p-forge/acme"
 	"github.com/ipshipyard/p2p-forge/client"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -272,6 +273,44 @@ func TestSetACMEChallenge(t *testing.T) {
 		t.Fatalf("Expected successful reply with TXT value, got empty %s", dns.RcodeToString[r.Rcode])
 	}
 	expectedAnswer := fmt.Sprintf(`%s	10	IN	TXT	"%s"`, m.Question[0].Name, testChallenge)
+	if r.Answer[0].String() != expectedAnswer {
+		t.Fatalf("Expected %s reply, got %s", expectedAnswer, r.Answer[0].String())
+	}
+}
+
+// Confirm we ALWAYS return empty TXT instead of NODATA to avoid
+// issues described in https://github.com/ipshipyard/p2p-forge/issues/52
+func TestACMEChallengeNoDNS01Value(t *testing.T) {
+	t.Parallel()
+	sk, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := libp2p.New(libp2p.Identity(sk))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Note: we don't register – we want DNS-01 to fail
+
+	peerIDb36, err := peer.ToCid(h.ID()).StringOfBase(multibase.Base36)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := new(dns.Msg)
+	m.Question = make([]dns.Question, 1)
+	m.Question[0] = dns.Question{Qclass: dns.ClassINET, Name: fmt.Sprintf("_acme-challenge.%s.%s.", peerIDb36, forge), Qtype: dns.TypeTXT}
+
+	r, err := dns.Exchange(m, dnsServerAddress)
+	if err != nil {
+		t.Fatalf("Could not send message: %s", err)
+	}
+	if r.Rcode != dns.RcodeSuccess || len(r.Answer) == 0 {
+		t.Fatalf("Expected successful reply with TXT value, got empty %s", dns.RcodeToString[r.Rcode])
+	}
+	expectedAnswer := fmt.Sprintf(`%s	10	IN	TXT	"%s"`, m.Question[0].Name, p2pacme.DNS01NotSetValue)
 	if r.Answer[0].String() != expectedAnswer {
 		t.Fatalf("Expected %s reply, got %s", expectedAnswer, r.Answer[0].String())
 	}
