@@ -3,11 +3,11 @@ $ORIGIN libp2p.direct.
 
 ;; SOA Records
 @                               86400   IN      SOA     aws1.libp2p.direct. domains.ipshipyard.com. (
-                                                        2025020101  ; serial
+                                                        2025022501  ; serial
                                                         86400       ; refresh
                                                         2400        ; retry
                                                         604800      ; expire
-                                                        300         ; minimum
+                                                        86400       ; minimum (TTL for "no record" responses)
                                                         )
 
 ;; DNS Service
