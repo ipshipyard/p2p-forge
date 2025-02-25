@@ -17,8 +17,13 @@ type acmeReader struct {
 	Datastore   datastore.Datastore
 }
 
-// The TTL for the _acme-challenge TXT record is as short as possible, typically 60 seconds or less.
-const ttl = 60 * time.Second
+const (
+	// Subdomain used for DNS-01 challenge
+	acmeSubdomain = "_acme-challenge"
+
+	// The TTL for the _acme-challenge TXT record is as short as possible
+	ttl = 10 * time.Second
+)
 
 // ServeDNS implements the plugin.Handler interface.
 func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
@@ -42,7 +47,6 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 			continue
 		}
 
-		const acmeSubdomain = "_acme-challenge"
 		prefix := domainSegments[0]
 		if prefix != acmeSubdomain {
 			continue
