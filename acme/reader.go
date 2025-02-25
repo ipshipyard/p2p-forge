@@ -3,7 +3,6 @@ package acme
 import (
 	"context"
 	"strings"
-	"time"
 
 	"github.com/coredns/coredns/plugin"
 	"github.com/ipfs/go-datastore"
@@ -22,7 +21,7 @@ const (
 	acmeSubdomain = "_acme-challenge"
 
 	// The TTL for the _acme-challenge TXT record is as short as possible
-	ttl = 10 * time.Second
+	txtTTL = uint32(10) // seconds
 )
 
 // ServeDNS implements the plugin.Handler interface.
@@ -60,8 +59,19 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 
 		val, err := p.Datastore.Get(ctx, datastore.NewKey(peerID.String()))
 		if err != nil {
-			containsNODATAResponse = true
-			dns01ResponseCount.WithLabelValues("NODATA-TXT").Add(1)
+			// return "empty" TXT record to have control over TTL that does not depend on minimal TTL from SOA
+			// (avoiding issue described in https://github.com/ipshipyard/p2p-forge/issues/52)
+			answers = append(answers, &dns.TXT{
+				Hdr: dns.RR_Header{
+					Name:   dns.Fqdn(q.Name),
+					Rrtype: dns.TypeTXT,
+					Class:  dns.ClassINET,
+					Ttl:    txtTTL,
+				},
+				Txt: []string{"not set yet"},
+			})
+			// track "empty" TXT separately from NODATA (we do return a record, but DNS-01 value is not set yet)
+			dns01ResponseCount.WithLabelValues("TXT-EMPTY").Add(1)
 			continue
 		}
 
@@ -70,7 +80,7 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 				Name:   dns.Fqdn(q.Name),
 				Rrtype: dns.TypeTXT,
 				Class:  dns.ClassINET,
-				Ttl:    uint32(ttl.Seconds()),
+				Ttl:    txtTTL,
 			},
 			Txt: []string{string(val)},
 		})
