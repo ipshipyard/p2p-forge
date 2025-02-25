@@ -34,6 +34,7 @@ type P2PForgeCertMgr struct {
 	cancel                     func()
 	forgeDomain                string
 	forgeRegistrationEndpoint  string
+	registrationDelay          time.Duration
 	ProvideHost                func(host.Host)
 	hostFn                     func() host.Host
 	hasHost                    func() bool
@@ -86,6 +87,7 @@ type P2PForgeCertMgrConfig struct {
 	allowPrivateForgeAddresses bool
 	produceShortAddrs          bool
 	renewCheckInterval         time.Duration
+	registrationDelay          time.Duration
 }
 
 type P2PForgeCertMgrOptions func(*P2PForgeCertMgrConfig) error
@@ -187,6 +189,14 @@ func WithOnCertRenewed(fn func()) P2PForgeCertMgrOptions {
 func WithRenewCheckInterval(renewCheckInterval time.Duration) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
 		config.renewCheckInterval = renewCheckInterval
+		return nil
+	}
+}
+
+// WithRegistrationDelay allows delaying initial registration to ensure node was online for a while before requesting TLS cert.
+func WithRegistrationDelay(registrationDelay time.Duration) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.registrationDelay = registrationDelay
 		return nil
 	}
 }
@@ -300,6 +310,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		log:                        mgrCfg.log,
 		allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
 		produceShortAddrs:          mgrCfg.produceShortAddrs,
+		registrationDelay:          mgrCfg.registrationDelay,
 	}
 
 	// NOTE: callback getter is necessary to avoid circular dependency
@@ -399,11 +410,21 @@ func (m *P2PForgeCertMgr) Start() error {
 	}
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	go func() {
+		start := time.Now()
 		log := m.log.Named("start")
 		h := m.hostFn()
 		name := certName(h.ID(), m.forgeDomain)
 		certExists := localCertExists(m.ctx, m.certmagic, name)
 		startCertManagement := func() {
+			// respect WithRegistrationDelay if no cert exists
+			if !certExists && m.registrationDelay != 0 {
+				remainingDelay := m.registrationDelay - time.Since(start)
+				if remainingDelay > 0 {
+					log.Infof("registration delay set to %s, sleeping for remaining %s", m.registrationDelay, remainingDelay)
+					time.Sleep(remainingDelay)
+				}
+			}
+			// start internal certmagic instance
 			if err := m.certmagic.ManageAsync(m.ctx, []string{name}); err != nil {
 				log.Error(err)
 			}
@@ -434,6 +455,7 @@ func (m *P2PForgeCertMgr) Start() error {
 }
 
 // withHostConnectivity executes callback func only after certain libp2p connectivity checks / criteria against passed host are fullfilled.
+// It will also delay registration to ensure user-set registrationDelay is respected.
 // The main purpose is to not bother CA ACME endpoint or p2p-forge registration endpoint if we know the peer is not
 // ready to use TLS cert.
 func withHostConnectivity(ctx context.Context, log *zap.SugaredLogger, h host.Host, callback func()) {
