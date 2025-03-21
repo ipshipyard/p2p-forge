@@ -2,7 +2,10 @@ package ipparser
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -32,9 +35,43 @@ func setup(c *caddy.Controller) error {
 		return plugin.Error(pluginName, c.ArgErr())
 	}
 
+	// Read SOA from zone/{forgeDomain} file
+	var soa *dns.SOA
+	config := dnsserver.GetConfig(c)
+	zoneFile := filepath.Join(config.Root, "zones", forgeDomain)
+	f, err := os.Open(filepath.Clean(zoneFile))
+	if err != nil {
+		return plugin.Error(pluginName, fmt.Errorf("failed to open zone file %s: %v", zoneFile, err))
+	}
+	defer f.Close()
+	zp := dns.NewZoneParser(f, forgeDomain+".", zoneFile)
+	for rr, ok := zp.Next(); ok; rr, ok = zp.Next() {
+		if s, ok := rr.(*dns.SOA); ok {
+			soa = s
+			break
+		}
+	}
+	soaRR := []dns.RR{
+		&dns.SOA{
+			Hdr: dns.RR_Header{
+				Name:   dns.Fqdn(forgeDomain + "."),
+				Rrtype: dns.TypeSOA,
+				Class:  dns.ClassINET,
+				Ttl:    soa.Hdr.Ttl,
+			},
+			Ns:      soa.Ns,
+			Mbox:    soa.Mbox,
+			Serial:  soa.Serial,
+			Refresh: soa.Refresh,
+			Retry:   soa.Retry,
+			Expire:  soa.Expire,
+			Minttl:  soa.Minttl,
+		},
+	}
+
 	// Add the Plugin to CoreDNS, so Servers can use it in their plugin chain.
 	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
-		return ipParser{Next: next, ForgeDomain: strings.ToLower(forgeDomain)}
+		return ipParser{Next: next, ForgeDomain: strings.ToLower(forgeDomain), SOA: soaRR}
 	})
 
 	return nil
@@ -43,6 +80,7 @@ func setup(c *caddy.Controller) error {
 type ipParser struct {
 	Next        plugin.Handler
 	ForgeDomain string
+	SOA         []dns.RR // Cached SOA record from zone file
 }
 
 // The TTL for self-referential ip.peerid.etld A/AAAA records can be as long as possible.
@@ -141,6 +179,14 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		m.SetReply(r)
 		m.Authoritative = true
 		m.Answer = answers
+
+		// RFC 2308 Compliance: NODATA responses (NOERROR with no answers)
+		// should include an SOA in the AUTHORITY section to specify the
+		// negative caching TTL (https://github.com/ipshipyard/p2p-forge/issues/52).
+		if containsNODATAResponse {
+			m.Ns = p.SOA
+		}
+
 		err := w.WriteMsg(&m)
 		if err != nil {
 			return dns.RcodeServerFailure, err
