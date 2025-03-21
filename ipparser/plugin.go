@@ -51,10 +51,27 @@ func setup(c *caddy.Controller) error {
 			break
 		}
 	}
+	soaRR := []dns.RR{
+		&dns.SOA{
+			Hdr: dns.RR_Header{
+				Name:   dns.Fqdn(forgeDomain + "."),
+				Rrtype: dns.TypeSOA,
+				Class:  dns.ClassINET,
+				Ttl:    soa.Hdr.Ttl,
+			},
+			Ns:      soa.Ns,
+			Mbox:    soa.Mbox,
+			Serial:  soa.Serial,
+			Refresh: soa.Refresh,
+			Retry:   soa.Retry,
+			Expire:  soa.Expire,
+			Minttl:  soa.Minttl,
+		},
+	}
 
 	// Add the Plugin to CoreDNS, so Servers can use it in their plugin chain.
 	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
-		return ipParser{Next: next, ForgeDomain: strings.ToLower(forgeDomain), SOA: soa}
+		return ipParser{Next: next, ForgeDomain: strings.ToLower(forgeDomain), SOA: soaRR}
 	})
 
 	return nil
@@ -63,7 +80,7 @@ func setup(c *caddy.Controller) error {
 type ipParser struct {
 	Next        plugin.Handler
 	ForgeDomain string
-	SOA         *dns.SOA // Cached SOA record from zone file
+	SOA         []dns.RR // Cached SOA record from zone file
 }
 
 // The TTL for self-referential ip.peerid.etld A/AAAA records can be as long as possible.
@@ -167,23 +184,7 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		// should include an SOA in the AUTHORITY section to specify the
 		// negative caching TTL (https://github.com/ipshipyard/p2p-forge/issues/52).
 		if containsNODATAResponse {
-			m.Ns = []dns.RR{
-				&dns.SOA{
-					Hdr: dns.RR_Header{
-						Name:   dns.Fqdn(p.ForgeDomain + "."),
-						Rrtype: dns.TypeSOA,
-						Class:  dns.ClassINET,
-						Ttl:    p.SOA.Hdr.Ttl,
-					},
-					Ns:      p.SOA.Ns,
-					Mbox:    p.SOA.Mbox,
-					Serial:  p.SOA.Serial,
-					Refresh: p.SOA.Refresh,
-					Retry:   p.SOA.Retry,
-					Expire:  p.SOA.Expire,
-					Minttl:  p.SOA.Minttl,
-				},
-			}
+			m.Ns = p.SOA
 		}
 
 		err := w.WriteMsg(&m)
