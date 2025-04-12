@@ -125,7 +125,7 @@ Prebuilt images for `main` and `staging` branches are provided at https://github
 Docker image ships without `/p2p-forge/Corefile` and `/p2p-forge/zones`, and you need to pass your own:
 
 ```console
-$ docker build -t p2p-forge. && docker run --rm -it --net=host -v ./Corefile:/p2p-forge/Corefile.example -v ./zones:/p2p-forge/zones p2p-forge -conf /p2p-forge/Corefile.example -dns.port 5353
+$ docker build -t p2p-forge . && docker run --rm -it --net=host -v ./Corefile:/p2p-forge/Corefile.example -v ./zones:/p2p-forge/zones p2p-forge -conf /p2p-forge/Corefile.example -dns.port 5353
 ```
 
 Test with `dig`:
