@@ -57,8 +57,17 @@ func isRelayAddr(a multiaddr.Multiaddr) bool {
 }
 
 // isPublicAddr follows the logic of manet.IsPublicAddr, except it uses
-// a stricter definition of "public" for ipv6 by excluding nat64 addresses.
+// a stricter definition of "public" for ipv6 by excluding nat64 addresses
+// and /p2p-circuit ones
 func isPublicAddr(a multiaddr.Multiaddr) bool {
+	// skip p2p-circuit ones
+	for _, p := range a.Protocols() {
+		if p.Code == multiaddr.P_CIRCUIT {
+			return false
+		}
+	}
+
+	// public vs private IPs
 	ip, err := manet.ToIP(a)
 	if err != nil {
 		return false
