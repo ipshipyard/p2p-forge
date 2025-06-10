@@ -755,7 +755,6 @@ func TestLibp2pACMEE2E(t *testing.T) {
 					t.Fatal("timed out waiting for certificate renewal")
 				}
 			}
-
 		})
 	}
 }
