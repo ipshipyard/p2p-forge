@@ -501,7 +501,7 @@ func withHostConnectivity(ctx context.Context, log *zap.SugaredLogger, h host.Ho
 	timer := time.NewTimer(math.MaxInt64)
 	defer timer.Stop()
 	currDelay := time.Second
-	minDelay := time.Second
+	minDelay := 5 * time.Second
 	maxDelay := time.Minute
 	for {
 		select {
@@ -518,7 +518,7 @@ func withHostConnectivity(ctx context.Context, log *zap.SugaredLogger, h host.Ho
 		case <-timer.C:
 			addrs := h.Addrs()
 			for _, a := range addrs {
-				if !isRelayAddr(a) && isPublicAddr(a) && isTCPAddr(a) {
+				if !isRelayAddr(a) && isTCPAddr(a) && isPublicAddr(a) {
 					callback()
 					return
 				}
@@ -532,12 +532,12 @@ func withHostConnectivity(ctx context.Context, log *zap.SugaredLogger, h host.Ho
 			evt := e.(event.EvtHostReachableAddrsChanged)
 			log.Infof("libp2p reachable addrs changed to %s", evt.Reachable)
 			for _, a := range evt.Reachable {
-				if isTCPAddr(a) {
+				if !isRelayAddr(a) && isTCPAddr(a) { // guaranteed to be public
 					callback()
 					return
 				}
 			}
-			log.Infof("certificate will not be requested if we don't have any reachable addrs")
+			log.Infof("certificate will not be requested if we don't have any reachable tcp addrs")
 		case <-ctx.Done():
 			if ctx.Err() != context.Canceled {
 				log.Error(fmt.Errorf("aborted while waiting for libp2p reachability status discovery: %w", ctx.Err()))
