@@ -6,7 +6,7 @@ It includes default [Prometheus Glient metrics](https://prometheus.io/docs/guide
 
 ### Forge metrics
 
-- `coredns_forge_info{version}` - info about p2p-forge instance, useful for tracking when version update occured on each box
+- `coredns_forge_info{version}` - info about p2p-forge instance, useful for tracking when version update occurred on each box
 
 #### `ipparser` plugin (DNS A/AAAA)
 
