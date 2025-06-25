@@ -89,6 +89,7 @@ func TestMain(m *testing.M) {
 		"log",
 		// "any", - we dont block any in tests, so we can inspect all record types via ANY query
 		"errors",
+		"any",
 		"whoami",
 		"startup",
 		"shutdown",
@@ -118,7 +119,7 @@ func TestMain(m *testing.M) {
 	dnsServerAddress = instance.Servers()[0].LocalAddr().String()
 	certmagic.DefaultACME.Resolver = dnsServerAddress
 
-	m.Run()
+	exitCode := m.Run()
 
 	errs := instance.ShutdownCallbacks()
 	err = errors.Join(errs...)
@@ -131,7 +132,9 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+
 	instance.Wait()
+	os.Exit(exitCode)
 }
 
 // Need to handle <peerID>.forgeDomain to return NODATA rather than NXDOMAIN per https://datatracker.ietf.org/doc/html/rfc8020

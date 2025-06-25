@@ -5,7 +5,7 @@ go 1.23.8
 
 require (
 	github.com/aws/aws-sdk-go v1.55.6
-	github.com/caddyserver/certmagic v0.21.6
+	github.com/caddyserver/certmagic v0.23.0
 	github.com/coredns/caddy v1.1.1
 	github.com/coredns/coredns v1.11.3
 	github.com/felixge/httpsnoop v1.0.4
@@ -16,7 +16,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/letsencrypt/pebble/v2 v2.7.0
 	github.com/libp2p/go-libp2p v0.42.0
-	github.com/mholt/acmez/v3 v3.0.0
+	github.com/mholt/acmez/v3 v3.1.2
 	github.com/miekg/dns v1.1.66
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/multiformats/go-multiaddr-dns v0.4.1
@@ -59,7 +59,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/koron/go-ssdp v0.0.6 // indirect
 	github.com/letsencrypt/challtestsrv v1.3.2 // indirect
-	github.com/libdns/libdns v0.2.2 // indirect
+	github.com/libdns/libdns v1.0.0-beta.1 // indirect
 	github.com/libp2p/go-buffer-pool v0.1.0 // indirect
 	github.com/libp2p/go-flow-metrics v0.2.0 // indirect
 	github.com/libp2p/go-libp2p-asn-util v0.4.1 // indirect
