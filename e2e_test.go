@@ -89,6 +89,7 @@ func TestMain(m *testing.M) {
 		"log",
 		// "any", - we dont block any in tests, so we can inspect all record types via ANY query
 		"errors",
+		"any",
 		"whoami",
 		"startup",
 		"shutdown",
