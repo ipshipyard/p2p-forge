@@ -331,11 +331,11 @@ func TestIPv4Lookup(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		qtype           uint16
-		subdomain       string
-		expectedSuccess bool
-		expectedAddress string
+		name             string
+		qtype            uint16
+		subdomain        string
+		expectedSuccess  bool
+		expectedAddress  string
 		expectServerFail bool
 	}{
 		{
@@ -441,11 +441,11 @@ func TestIPv6Lookup(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		qtype           uint16
-		subdomain       string
-		expectedSuccess bool
-		expectedAddress string
+		name             string
+		qtype            uint16
+		subdomain        string
+		expectedSuccess  bool
+		expectedAddress  string
 		expectServerFail bool
 	}{
 		{
@@ -484,11 +484,11 @@ func TestIPv6Lookup(t *testing.T) {
 			expectedAddress: "::",
 		},
 		{
-			name:            "InvalidIPv6_IPv4Combo",
-			qtype:           dns.TypeAAAA,
-			subdomain:       "0--1.2.3.4",
-			expectedSuccess: false,
-			expectedAddress: "",
+			name:             "InvalidIPv6_IPv4Combo",
+			qtype:            dns.TypeAAAA,
+			subdomain:        "0--1.2.3.4",
+			expectedSuccess:  false,
+			expectedAddress:  "",
 			expectServerFail: true, // Domain parsing rejects dots in labels
 		},
 		{

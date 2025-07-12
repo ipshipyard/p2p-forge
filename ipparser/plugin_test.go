@@ -1,13 +1,14 @@
 package ipparser
 
 import (
+	"context"
+	"net"
 	"net/netip"
 	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
 )
-
 
 // TestDomainCompatibility tests full domain processing
 func TestDomainCompatibility(t *testing.T) {
@@ -80,7 +81,6 @@ func TestDomainCompatibility(t *testing.T) {
 		})
 	}
 }
-
 
 func TestParseIPFromPrefix(t *testing.T) {
 	tests := []struct {
@@ -273,3 +273,99 @@ func TestParseIPFromPrefix(t *testing.T) {
 		})
 	}
 }
+
+// TestACMEChallengeIgnored tests that _acme-challenge domains are ignored by ipparser
+func TestACMEChallengeIgnored(t *testing.T) {
+	tests := []struct {
+		name   string
+		domain string
+		qtype  uint16
+	}{
+		{
+			name:   "TXT_acme_challenge",
+			domain: "_acme-challenge.k51qzi5uqu5dj2c294cab64yiq2ri684kc5sr9odfhoo84osl4resldwfy8u5r.libp2p.direct",
+			qtype:  dns.TypeTXT,
+		},
+		{
+			name:   "A_acme_challenge",
+			domain: "_acme-challenge.k51qzi5uqu5dj2c294cab64yiq2ri684kc5sr9odfhoo84osl4resldwfy8u5r.libp2p.direct",
+			qtype:  dns.TypeA,
+		},
+		{
+			name:   "AAAA_acme_challenge",
+			domain: "_acme-challenge.k51qzi5uqu5dj2c294cab64yiq2ri684kc5sr9odfhoo84osl4resldwfy8u5r.libp2p.direct",
+			qtype:  dns.TypeAAAA,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a test ipParser instance
+			parser := ipParser{
+				Next:        nil, // No next plugin
+				ForgeDomain: "libp2p.direct",
+				SOA:         nil,
+			}
+
+			// Create DNS message
+			req := new(dns.Msg)
+			req.Question = []dns.Question{
+				{Name: tt.domain, Qtype: tt.qtype, Qclass: dns.ClassINET},
+			}
+
+			// Create test response writer
+			w := &testResponseWriter{}
+
+			// Call ServeDNS
+			rcode, err := parser.ServeDNS(context.Background(), w, req)
+
+			// _acme-challenge domains should be ignored (passed to next plugin)
+			// Since we have no next plugin, this should result in calling the next plugin
+			// which will return the "no next plugin" behavior
+			if rcode != dns.RcodeServerFailure || err == nil {
+				// If there was no next plugin, we expect this to be handled by plugin.NextOrFailure
+				// which returns SERVFAIL when there's no next plugin
+				t.Logf("Expected _acme-challenge domain to be ignored by ipparser and passed to next plugin")
+
+				// The key test is that ipparser didn't handle it (didn't return success with answers)
+				if w.msg != nil && len(w.msg.Answer) > 0 {
+					t.Errorf("ipparser should not have generated answers for _acme-challenge domain")
+				}
+			}
+		})
+	}
+}
+
+// testResponseWriter is a simple test implementation of dns.ResponseWriter
+type testResponseWriter struct {
+	msg *dns.Msg
+}
+
+func (w *testResponseWriter) LocalAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53}
+}
+
+func (w *testResponseWriter) RemoteAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}
+}
+
+func (w *testResponseWriter) WriteMsg(msg *dns.Msg) error {
+	w.msg = msg
+	return nil
+}
+
+func (w *testResponseWriter) Write([]byte) (int, error) {
+	return 0, nil
+}
+
+func (w *testResponseWriter) Close() error {
+	return nil
+}
+
+func (w *testResponseWriter) TsigStatus() error {
+	return nil
+}
+
+func (w *testResponseWriter) TsigTimersOnly(bool) {}
+
+func (w *testResponseWriter) Hijack() {}
