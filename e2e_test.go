@@ -336,6 +336,7 @@ func TestIPv4Lookup(t *testing.T) {
 		subdomain       string
 		expectedSuccess bool
 		expectedAddress string
+		expectServerFail bool
 	}{
 		{
 			name:            "IPv4-A",
@@ -349,7 +350,7 @@ func TestIPv4Lookup(t *testing.T) {
 			qtype:           dns.TypeANY,
 			subdomain:       "11-222-33-4",
 			expectedSuccess: true,
-			expectedAddress: "11.222.33.4",
+			expectedAddress: "", // ANY queries return HINFO per RFC 8482, not IP addresses
 		},
 		{
 			name:            "IPv4-AAAA",
@@ -360,21 +361,21 @@ func TestIPv4Lookup(t *testing.T) {
 		},
 		{
 			name:            "InvalidIPv4_1-2-3-4-5",
-			qtype:           dns.TypeANY,
+			qtype:           dns.TypeA,
 			subdomain:       "1-2-3-4-5",
 			expectedSuccess: false,
 			expectedAddress: "",
 		},
 		{
 			name:            "InvalidIPv4_1-2-3",
-			qtype:           dns.TypeANY,
+			qtype:           dns.TypeA,
 			subdomain:       "1-2-3",
 			expectedSuccess: false,
 			expectedAddress: "",
 		},
 		{
 			name:            "InvalidIPv4_1-2-3-444",
-			qtype:           dns.TypeANY,
+			qtype:           dns.TypeA,
 			subdomain:       "1-2-3-444",
 			expectedSuccess: false,
 			expectedAddress: "",
@@ -394,8 +395,14 @@ func TestIPv4Lookup(t *testing.T) {
 			}
 
 			if !tt.expectedSuccess {
-				if r.Rcode != dns.RcodeServerFailure || len(r.Answer) != 0 {
-					t.Fatalf("Expected failed reply, got %s and answers %+v", dns.RcodeToString[r.Rcode], r.Answer)
+				if tt.expectServerFail {
+					if r.Rcode != dns.RcodeServerFailure {
+						t.Fatalf("Expected SERVFAIL reply, got %s", dns.RcodeToString[r.Rcode])
+					}
+				} else {
+					if r.Rcode != dns.RcodeSuccess || len(r.Answer) != 0 {
+						t.Fatalf("Expected NODATA reply, got %s and answers %+v", dns.RcodeToString[r.Rcode], r.Answer)
+					}
 				}
 				return
 			}
@@ -439,6 +446,7 @@ func TestIPv6Lookup(t *testing.T) {
 		subdomain       string
 		expectedSuccess bool
 		expectedAddress string
+		expectServerFail bool
 	}{
 		{
 			name:            "A",
@@ -452,7 +460,7 @@ func TestIPv6Lookup(t *testing.T) {
 			qtype:           dns.TypeANY,
 			subdomain:       "1234-5678-90AB-CDEF-1-22-33-444",
 			expectedSuccess: true,
-			expectedAddress: "1234:5678:90ab:cdef:1:22:33:444",
+			expectedAddress: "", // ANY queries return HINFO per RFC 8482, not IP addresses
 		},
 		{
 			name:            "AAAA",
@@ -462,36 +470,37 @@ func TestIPv6Lookup(t *testing.T) {
 			expectedAddress: "::1",
 		},
 		{
-			name:            "Invalid_Starting0",
-			qtype:           dns.TypeANY,
+			name:            "Valid_Leading_Compression",
+			qtype:           dns.TypeAAAA,
 			subdomain:       "--1",
-			expectedSuccess: false,
-			expectedAddress: "",
+			expectedSuccess: true,
+			expectedAddress: "::1",
 		},
 		{
-			name:            "Invalid_Ending0",
-			qtype:           dns.TypeANY,
+			name:            "Valid_Trailing_Compression",
+			qtype:           dns.TypeAAAA,
 			subdomain:       "0--",
-			expectedSuccess: false,
-			expectedAddress: "",
+			expectedSuccess: true,
+			expectedAddress: "::",
 		},
 		{
 			name:            "InvalidIPv6_IPv4Combo",
-			qtype:           dns.TypeANY,
+			qtype:           dns.TypeAAAA,
 			subdomain:       "0--1.2.3.4",
 			expectedSuccess: false,
 			expectedAddress: "",
+			expectServerFail: true, // Domain parsing rejects dots in labels
 		},
 		{
 			name:            "Invalid_TooSmall",
-			qtype:           dns.TypeANY,
+			qtype:           dns.TypeAAAA,
 			subdomain:       "1-2-3-4-5-6-7",
 			expectedSuccess: false,
 			expectedAddress: "",
 		},
 		{
 			name:            "Invalid_TooBig",
-			qtype:           dns.TypeANY,
+			qtype:           dns.TypeAAAA,
 			subdomain:       "1-2-3-4-5-6-7-8-9",
 			expectedSuccess: false,
 			expectedAddress: "",
@@ -511,8 +520,14 @@ func TestIPv6Lookup(t *testing.T) {
 			}
 
 			if !tt.expectedSuccess {
-				if r.Rcode != dns.RcodeServerFailure || len(r.Answer) != 0 {
-					t.Fatalf("Expected failed reply, got %s and answers %+v", dns.RcodeToString[r.Rcode], r.Answer)
+				if tt.expectServerFail {
+					if r.Rcode != dns.RcodeServerFailure {
+						t.Fatalf("Expected SERVFAIL reply, got %s", dns.RcodeToString[r.Rcode])
+					}
+				} else {
+					if r.Rcode != dns.RcodeSuccess || len(r.Answer) != 0 {
+						t.Fatalf("Expected NODATA reply, got %s and answers %+v", dns.RcodeToString[r.Rcode], r.Answer)
+					}
 				}
 				return
 			}

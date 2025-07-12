@@ -104,6 +104,7 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		}
 
 		peerIDStr := domainSegments[len(domainSegments)-1]
+
 		_, err := peer.Decode(peerIDStr)
 		if err != nil {
 			continue
@@ -117,21 +118,30 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		}
 
 		prefix := domainSegments[0]
-		segments := strings.Split(prefix, "-")
-		if len(segments) == 4 {
-			ipStr := strings.Join(segments, ".")
-			ip, err := netip.ParseAddr(ipStr)
-			if err != nil {
-				continue
-			}
 
-			// Need to handle <ipv4>.<peerID>.forgeDomain to return NODATA rather than NXDOMAIN per https://datatracker.ietf.org/doc/html/rfc8020
-			if !(q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY) {
-				containsNODATAResponse = true
-				dynamicResponseCount.WithLabelValues("NODATA-" + dnsToString(q.Qtype)).Add(1)
-				continue
-			}
+		// Skip ACME challenge domains - let them pass through to acme plugin
+		if strings.HasPrefix(prefix, "_acme-challenge") {
+			continue
+		}
 
+		// Only handle A and AAAA queries - return NODATA for other query types on IP domains
+		if q.Qtype != dns.TypeA && q.Qtype != dns.TypeAAAA {
+			containsNODATAResponse = true
+			dynamicResponseCount.WithLabelValues("NODATA-" + dnsToString(q.Qtype)).Add(1)
+			continue
+		}
+
+		// Parse IP based on query type - parseIPFromPrefix handles all validation
+		ip, err := parseIPFromPrefix(prefix, q.Qtype)
+		if err != nil {
+			// For invalid IPs, return NODATA
+			containsNODATAResponse = true
+			dynamicResponseCount.WithLabelValues("NODATA-" + dnsToString(q.Qtype)).Add(1)
+			continue
+		}
+
+		switch q.Qtype {
+		case dns.TypeA:
 			answers = append(answers, &dns.A{
 				Hdr: dns.RR_Header{
 					Name:   dns.Fqdn(q.Name),
@@ -142,36 +152,19 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				A: ip.AsSlice(),
 			})
 			dynamicResponseCount.WithLabelValues("A").Add(1)
-			continue
-		}
 
-		// - is not a valid first or last character https://datatracker.ietf.org/doc/html/rfc1123#section-2
-		if prefix[0] == '-' || prefix[len(prefix)-1] == '-' {
-			continue
+		case dns.TypeAAAA:
+			answers = append(answers, &dns.AAAA{
+				Hdr: dns.RR_Header{
+					Name:   dns.Fqdn(q.Name),
+					Rrtype: dns.TypeAAAA,
+					Class:  dns.ClassINET,
+					Ttl:    uint32(ttl.Seconds()),
+				},
+				AAAA: ip.AsSlice(),
+			})
+			dynamicResponseCount.WithLabelValues("AAAA").Add(1)
 		}
-
-		prefixAsIpv6 := strings.Join(segments, ":")
-		ip, err := netip.ParseAddr(prefixAsIpv6)
-		if err != nil {
-			continue
-		}
-
-		if !(q.Qtype == dns.TypeAAAA || q.Qtype == dns.TypeANY) {
-			containsNODATAResponse = true
-			dynamicResponseCount.WithLabelValues("NODATA-" + dnsToString(q.Qtype)).Add(1)
-			continue
-		}
-
-		answers = append(answers, &dns.AAAA{
-			Hdr: dns.RR_Header{
-				Name:   dns.Fqdn(q.Name),
-				Rrtype: dns.TypeAAAA,
-				Class:  dns.ClassINET,
-				Ttl:    uint32(ttl.Seconds()),
-			},
-			AAAA: ip.AsSlice(),
-		})
-		dynamicResponseCount.WithLabelValues("AAAA").Add(1)
 	}
 
 	if len(answers) > 0 || containsNODATAResponse {
@@ -200,3 +193,27 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 // Name implements the Handler interface.
 func (p ipParser) Name() string { return pluginName }
+
+// parseIPFromPrefix converts a DNS prefix to an IP address based on query type
+func parseIPFromPrefix(prefix string, qtype uint16) (netip.Addr, error) {
+	segments := strings.Split(prefix, "-")
+
+	switch qtype {
+	case dns.TypeA:
+		ipStr := strings.Join(segments, ".")
+		if ip, err := netip.ParseAddr(ipStr); err == nil && ip.Is4() {
+			return ip, nil
+		}
+		return netip.Addr{}, fmt.Errorf("invalid IPv4 address: %s", ipStr)
+
+	case dns.TypeAAAA:
+		ipStr := strings.Join(segments, ":")
+		if ip, err := netip.ParseAddr(ipStr); err == nil && ip.Is6() {
+			return ip, nil
+		}
+		return netip.Addr{}, fmt.Errorf("invalid IPv6 address: %s", ipStr)
+
+	default:
+		return netip.Addr{}, fmt.Errorf("unsupported query type: %d", qtype)
+	}
+}
