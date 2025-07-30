@@ -744,6 +744,7 @@ func addrFactoryFn(skipForgeAddrs bool, hostFn func() host.Host, forgeDomain str
 		}
 		peerID = h.ID()
 	}
+OUTER:
 	for _, a := range multiaddrs {
 		if isRelayAddr(a) {
 			retAddrs = append(retAddrs, a)
@@ -814,9 +815,9 @@ func addrFactoryFn(skipForgeAddrs bool, hostFn func() host.Host, forgeDomain str
 		}
 
 		for _, ua := range unreachableAddrs {
-			// if the tcp component is unreachable, ignore the ws addr too
+			// if the tcp component is unreachable, skip processing this entire multiaddr (continue to next multiaddr in outer loop)
 			if ua.Equal(withoutForgeWSS) {
-				continue
+				continue OUTER
 			}
 		}
 
