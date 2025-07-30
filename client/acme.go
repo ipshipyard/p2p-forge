@@ -815,7 +815,7 @@ OUTER:
 		}
 
 		for _, ua := range unreachableAddrs {
-			// if the tcp component is unreachable, ignore the ws addr too
+			// if the tcp component is unreachable, skip processing this entire multiaddr (continue to next multiaddr in outer loop)
 			if ua.Equal(withoutForgeWSS) {
 				continue OUTER
 			}
