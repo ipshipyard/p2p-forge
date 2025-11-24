@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"testing"
 	"time"
 
 	clog "github.com/coredns/coredns/plugin/pkg/log"
@@ -175,10 +176,18 @@ func (c *acmeWriter) OnStartup() error {
 		}
 	}
 
+	// Use appropriate registry for HTTP metrics
+	var reg *prometheus.Registry
+	if testing.Testing() {
+		reg = prometheus.NewRegistry()
+	} else {
+		reg = prometheus.DefaultRegisterer.(*prometheus.Registry)
+	}
+
 	// middleware with prometheus recorder
 	httpMetricsMiddleware := middleware.New(middleware.Config{
 		Recorder: metrics.NewRecorder(metrics.Config{
-			Registry:        prometheus.DefaultRegisterer.(*prometheus.Registry),
+			Registry:        reg,
 			Prefix:          "coredns_forge_" + pluginName,
 			DurationBuckets: []float64{0.1, 0.5, 1, 2, 5, 8, 10, 20, 30}, // TODO: remove this comment if we are ok with these buckets
 		}),
@@ -219,7 +228,7 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string, httpUserAgent
 	agentVersion := agentType(httpUserAgent)
 	h, err := libp2p.New(libp2p.NoListenAddrs, libp2p.DisableRelay())
 	if err != nil {
-		peerProbeCount.WithLabelValues("error", agentVersion).Add(1)
+		recordPeerProbe("error", agentVersion)
 		return err
 	}
 	defer h.Close()
@@ -228,7 +237,7 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string, httpUserAgent
 	for _, addr := range addrs {
 		ma, err := multiaddr.NewMultiaddr(addr)
 		if err != nil {
-			peerProbeCount.WithLabelValues("error", agentVersion).Add(1)
+			recordPeerProbe("error", agentVersion)
 			return err
 		}
 		mas = append(mas, ma)
@@ -236,7 +245,7 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string, httpUserAgent
 
 	err = h.Connect(ctx, peer.AddrInfo{ID: p, Addrs: mas})
 	if err != nil {
-		peerProbeCount.WithLabelValues("error", agentVersion).Add(1)
+		recordPeerProbe("error", agentVersion)
 		return err
 	}
 
@@ -248,7 +257,7 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string, httpUserAgent
 		}
 	}
 	log.Debugf("connected to peer %s - UserAgent: %q", p, agentVersion)
-	peerProbeCount.WithLabelValues("ok", agentType(agentVersion)).Add(1)
+	recordPeerProbe("ok", agentType(agentVersion))
 	return nil
 }
 
