@@ -16,14 +16,16 @@ var (
 	metricsOnce        sync.Once
 )
 
-// initMetrics initializes and registers ACME metrics with appropriate registry
-// Uses sync.Once to ensure thread-safe initialization during parallel test execution
+// initMetrics initializes and registers ACME metrics with appropriate registry.
+// Uses sync.Once to ensure single initialization across parallel tests.
+// The first test to call this determines the registry type, which is fine since
+// each test gets its own TestInfrastructure with isolated CoreDNS instance.
 func initMetrics() {
 	metricsOnce.Do(func() {
 		var registry prometheus.Registerer = prometheus.DefaultRegisterer
 
 		if testing.Testing() {
-			// Create isolated registry per test instance
+			// Use isolated registry in tests to avoid metric collisions
 			registry = prometheus.NewRegistry()
 		}
 

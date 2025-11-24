@@ -10,6 +10,10 @@ import (
 	"github.com/multiformats/go-multibase"
 )
 
+// RFC 1035 max length for a DNS label. IPv6 addresses never exceed this
+// after escaping (longest case is 41 chars), but we validate defensively.
+const maxDNSLabelLength = 63
+
 // ForgeAddrInfo contains the components needed to build a forge domain address
 type ForgeAddrInfo struct {
 	EscapedIP    string // RFC-compliant DNS label for the IP address
@@ -66,6 +70,11 @@ func ExtractForgeAddrInfo(addr multiaddr.Multiaddr, peerID peer.ID) (*ForgeAddrI
 
 	if !found || info.TCPPort == "" {
 		return nil, errors.New("invalid multiaddr: missing IP or TCP component")
+	}
+
+	// Sanity check: valid IPv6 never exceeds this, but catch edge cases from fuzz tests.
+	if len(info.EscapedIP) > maxDNSLabelLength {
+		return nil, fmt.Errorf("DNS label too long: %d characters (max %d)", len(info.EscapedIP), maxDNSLabelLength)
 	}
 
 	return info, nil

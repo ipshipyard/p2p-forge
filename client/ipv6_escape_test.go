@@ -67,6 +67,13 @@ func TestExtractForgeAddrInfoProducesRFCCompliantLabels(t *testing.T) {
 			expectedVersion: "6",
 			expectedPort:    "4001",
 		},
+		{
+			name:            "IPv6 longest possible address stays under 63 char DNS label limit",
+			multiaddr:       "/ip6/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/tcp/4001",
+			expectedDNS:     "ffff-ffff-ffff-ffff-ffff-ffff-ffff-ffff", // 39 chars - well under 63
+			expectedVersion: "6",
+			expectedPort:    "4001",
+		},
 	}
 
 	// Create a test peer ID

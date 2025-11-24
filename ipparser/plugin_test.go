@@ -244,6 +244,25 @@ func TestParseIPFromPrefix(t *testing.T) {
 			wantValid: true,
 			wantIP:    "fe80::1",
 		},
+		// Zone identifier rejection tests (RFC 1035 compliance)
+		{
+			name:      "IPv6_with_zone_id_rejected",
+			prefix:    "--1%eth0",
+			qtype:     dns.TypeAAAA,
+			wantValid: false, // Zone IDs not allowed in DNS labels
+		},
+		{
+			name:      "IPv6_with_zone_id_numeric",
+			prefix:    "fe80--1%1",
+			qtype:     dns.TypeAAAA,
+			wantValid: false, // Zone IDs not allowed
+		},
+		{
+			name:      "IPv6_zone_with_control_char",
+			prefix:    "--1%\x00",
+			qtype:     dns.TypeAAAA,
+			wantValid: false, // Zone IDs with null bytes rejected
+		},
 		// Unsupported query types
 		{
 			name:      "TXT_Query",

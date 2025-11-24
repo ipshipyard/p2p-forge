@@ -209,6 +209,12 @@ func parseIPFromPrefix(prefix string, qtype uint16) (netip.Addr, error) {
 	case dns.TypeAAAA:
 		ipStr := strings.Join(segments, ":")
 		if ip, err := netip.ParseAddr(ipStr); err == nil && ip.Is6() {
+			// Zone IDs like %eth0 can't appear in DNS labels (RFC 1035).
+			// While netip.ParseAddr already rejects them, this check provides
+			// defense if parsing behavior changes or malformed input gets through.
+			if strings.Contains(ip.String(), "%") {
+				return netip.Addr{}, fmt.Errorf("zone identifiers not allowed in DNS labels")
+			}
 			return ip, nil
 		}
 		return netip.Addr{}, fmt.Errorf("invalid IPv6 address: %s", ipStr)
