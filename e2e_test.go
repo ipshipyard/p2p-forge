@@ -951,7 +951,7 @@ func (d *deterministicReader) Read(p []byte) (n int, err error) {
 		h.Write(offsetBytes)
 		result := h.Sum(nil)
 
-		p[i] = result[d.offset%32] // Use offset to cycle through the hash
+		p[i] = result[d.offset%sha256.Size]
 		d.offset++
 	}
 	return len(p), nil

@@ -2,6 +2,7 @@ package ipparser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -213,7 +214,7 @@ func parseIPFromPrefix(prefix string, qtype uint16) (netip.Addr, error) {
 			// While netip.ParseAddr already rejects them, this check provides
 			// defense if parsing behavior changes or malformed input gets through.
 			if strings.Contains(ip.String(), "%") {
-				return netip.Addr{}, fmt.Errorf("zone identifiers not allowed in DNS labels")
+				return netip.Addr{}, errors.New("zone identifiers not allowed in DNS labels")
 			}
 			return ip, nil
 		}

@@ -12,31 +12,42 @@ import (
 func FuzzParseIPFromPrefix(f *testing.F) {
 	// Seed corpus with valid and edge case DNS labels
 	seeds := []string{
-		// Valid IPv4
+		// Valid IPv4 - boundary and common cases
 		"192-168-1-1",
 		"0-0-0-0",
 		"255-255-255-255",
 		"127-0-0-1",
-		// Valid IPv6
+		"10-0-0-1",
+		"172-16-0-1",
+		// Valid IPv6 - various compression patterns
 		"2001-db8--1",
 		"0--1",
 		"0--0",
 		"fe80--1",
 		"2001-db8-85a3--8a2e-370-7334",
-		// Edge cases
+		"ffff-ffff-ffff-ffff-ffff-ffff-ffff-ffff",
+		"--",
+		"1--1",
+		// Edge cases - empty and hyphen patterns
 		"",
 		"-",
-		"--",
 		"---",
+		"----",
+		"-0-0-0-0",
+		"0-0-0-0-",
 		// Potential injection attempts
 		"192-168-1-1/../../etc/passwd",
 		"0x7f-0x00-0x00-0x01",
 		"192.168.1.1",
 		"../192-168-1-1",
+		"192-168-1-1\x00",
+		"192-168-1-1%00",
 		// ACME challenge (should be ignored)
 		"_acme-challenge",
-		// Mixed formats
+		// Mixed/malformed formats
 		"192-168-1-1-2001-db8",
+		"abc-def-ghi-jkl",
+		"999-999-999-999",
 	}
 
 	for _, seed := range seeds {
@@ -95,17 +106,28 @@ func FuzzParseIPFromPrefix(f *testing.F) {
 
 // FuzzParseIPFromPrefixRoundtrip tests that valid IPs can be encoded and decoded consistently
 func FuzzParseIPFromPrefixRoundtrip(f *testing.F) {
-	// Seed with valid IP addresses
+	// Seed with valid IP addresses covering different ranges and formats
 	seeds := []string{
-		"192.168.1.1",
+		// IPv4 boundary cases
 		"0.0.0.0",
 		"255.255.255.255",
 		"127.0.0.1",
+		// IPv4 private ranges
+		"10.0.0.1",
+		"172.16.0.1",
+		"192.168.1.1",
+		// IPv6 special addresses
 		"::1",
 		"::",
+		"::ffff:192.0.2.1",
+		// IPv6 various compression positions
 		"2001:db8::1",
+		"2001:db8::",
 		"fe80::1",
 		"2001:db8:85a3::8a2e:370:7334",
+		// IPv6 full address (no compression)
+		"2001:db8:85a3:0:0:8a2e:370:7334",
+		"ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
 	}
 
 	for _, seed := range seeds {
@@ -172,13 +194,24 @@ func FuzzParseIPFromPrefixRoundtrip(f *testing.F) {
 func FuzzIPv6DNSLabelConsistency(f *testing.F) {
 	// Seed with IPv6 patterns that could cause issues
 	seeds := []string{
-		"--",              // double compression only
-		"0--0",            // double compression with leading/trailing zeros
-		"a--b",            // double compression in middle
-		"-1-2-3",          // leading hyphen
-		"1-2-3-",          // trailing hyphen
-		"----",            // multiple hyphens
-		"0-0-0-0-0-0-0-0", // all zeros expanded
+		// Compression edge cases
+		"--",         // double compression only (::)
+		"0--0",       // compression with explicit zeros
+		"a--b",       // compression in middle
+		"2001-db8--", // trailing compression
+		"--1",        // leading compression
+		// Hyphen boundary cases
+		"-1-2-3", // leading hyphen (invalid DNS)
+		"1-2-3-", // trailing hyphen (invalid DNS)
+		"----",   // multiple consecutive hyphens
+		"-----",  // more consecutive hyphens
+		// Expanded forms
+		"0-0-0-0-0-0-0-0",                         // all zeros expanded
+		"0-0-0-0-0-0-0-1",                         // loopback expanded
+		"ffff-ffff-ffff-ffff-ffff-ffff-ffff-ffff", // max value
+		// Mixed compression and explicit zeros
+		"2001-0-0-0-0-0-0-1",
+		"2001-db8-0-0-0-0-0-1",
 	}
 
 	for _, seed := range seeds {
