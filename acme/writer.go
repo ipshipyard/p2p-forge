@@ -304,6 +304,15 @@ func (c *acmeWriter) OnFinalShutdown() error {
 	if c.closeCertMgr != nil {
 		c.closeCertMgr()
 	}
+
+	// Close datastore to release file handles (critical on Windows).
+	// Shared with acmeReader but closed here to avoid double-close.
+	if c.Datastore != nil {
+		if err := c.Datastore.Close(); err != nil {
+			log.Warningf("failed to close datastore: %v", err)
+		}
+	}
+
 	c.nlSetup = false
 	return nil
 }
