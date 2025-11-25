@@ -77,6 +77,7 @@ func init() {
 		"whoami",
 		"startup",
 		"shutdown",
+		"denylist",
 		"ipparser",
 		"file",
 		"acme",
@@ -985,4 +986,264 @@ Stack trace:
 	}()
 
 	operation()
+}
+
+// DenylistTestConfig configures denylist for E2E tests
+type DenylistTestConfig struct {
+	DenyFileContent  string // content for deny list file (one IP/CIDR per line)
+	AllowFileContent string // content for allow list file (one IP/CIDR per line)
+}
+
+// NewTestInfrastructureWithDenylist creates a test environment with denylist configured
+func NewTestInfrastructureWithDenylist(t *testing.T, cfg DenylistTestConfig) *TestInfrastructure {
+	tmpDir := t.TempDir()
+
+	tmpListener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("Failed to create HTTP listener: %v", err)
+	}
+	httpPort := tmpListener.Addr().(*net.TCPAddr).Port
+	tmpListener.Close()
+
+	// Build denylist block
+	var denylistBlock strings.Builder
+	denylistBlock.WriteString("denylist {\n")
+
+	if cfg.DenyFileContent != "" {
+		denyFilePath := filepath.Join(tmpDir, "denylist.txt")
+		if err := os.WriteFile(denyFilePath, []byte(cfg.DenyFileContent), 0644); err != nil {
+			t.Fatalf("Failed to write deny file: %v", err)
+		}
+		denylistBlock.WriteString(fmt.Sprintf("\t\tfile %s type=deny name=test-deny\n", denyFilePath))
+	}
+
+	if cfg.AllowFileContent != "" {
+		allowFilePath := filepath.Join(tmpDir, "allowlist.txt")
+		if err := os.WriteFile(allowFilePath, []byte(cfg.AllowFileContent), 0644); err != nil {
+			t.Fatalf("Failed to write allow file: %v", err)
+		}
+		denylistBlock.WriteString(fmt.Sprintf("\t\tfile %s type=allow name=test-allow\n", allowFilePath))
+	}
+
+	denylistBlock.WriteString("\t}")
+
+	corefile := fmt.Sprintf(`.:0 {
+		log
+		errors
+		%s
+		ipparser %s
+		acme %s {
+			registration-domain %s listen-address=:%d external-tls=true
+			database-type badger %s
+        }
+	}`, denylistBlock.String(), forge, forge, forgeRegistration, httpPort, tmpDir)
+
+	instance, err := caddy.Start(NewInput(corefile))
+	if err != nil {
+		t.Fatalf("Failed to start CoreDNS instance: %v", err)
+	}
+
+	testInfra := &TestInfrastructure{
+		DNSServerAddress: instance.Servers()[0].LocalAddr().String(),
+		HTTPPort:         httpPort,
+		TmpDir:           tmpDir,
+		Instance:         instance,
+	}
+
+	t.Cleanup(func() {
+		if instance != nil {
+			errs := instance.ShutdownCallbacks()
+			if err := errors.Join(errs...); err != nil {
+				t.Logf("Shutdown callback errors: %v", err)
+			}
+			if err := instance.Stop(); err != nil {
+				t.Logf("Instance stop error: %v", err)
+			}
+			instance.Wait()
+		}
+	})
+
+	return testInfra
+}
+
+func TestDenylistE2E(t *testing.T) {
+	// Note: This test runs sequentially (no t.Parallel()) because the denylist
+	// plugin uses a global singleton (sharedManager). Running in parallel with
+	// other tests that start CoreDNS instances would cause data races.
+
+	_, pk, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerID, err := peer.IDFromPublicKey(pk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerIDb36, err := peer.ToCid(peerID).StringOfBase(multibase.Base36)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("no_denylist_works", func(t *testing.T) {
+		testInfra := NewTestInfrastructure(t)
+
+		// Query for 1.2.3.4 - should return the IP
+		m := &dns.Msg{Question: []dns.Question{{
+			Qclass: dns.ClassINET,
+			Name:   fmt.Sprintf("1-2-3-4.%s.%s.", peerIDb36, forge),
+			Qtype:  dns.TypeA,
+		}}}
+
+		r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+		if err != nil {
+			t.Fatalf("Could not send message: %s", err)
+		}
+		if r.Rcode != dns.RcodeSuccess {
+			t.Fatalf("Expected successful reply, got %s", dns.RcodeToString[r.Rcode])
+		}
+		if len(r.Answer) != 1 {
+			t.Fatalf("Expected 1 answer, got %d", len(r.Answer))
+		}
+		if a, ok := r.Answer[0].(*dns.A); !ok || a.A.String() != "1.2.3.4" {
+			t.Fatalf("Expected A record 1.2.3.4, got %v", r.Answer[0])
+		}
+	})
+
+	t.Run("blocked_IP_returns_NODATA", func(t *testing.T) {
+		testInfra := NewTestInfrastructureWithDenylist(t, DenylistTestConfig{
+			DenyFileContent: "1.2.3.4\n",
+		})
+
+		// Query for 1.2.3.4 - should return NODATA (success but no answers)
+		m := &dns.Msg{Question: []dns.Question{{
+			Qclass: dns.ClassINET,
+			Name:   fmt.Sprintf("1-2-3-4.%s.%s.", peerIDb36, forge),
+			Qtype:  dns.TypeA,
+		}}}
+
+		r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+		if err != nil {
+			t.Fatalf("Could not send message: %s", err)
+		}
+		if r.Rcode != dns.RcodeSuccess {
+			t.Fatalf("Expected NODATA (success with no answers), got %s", dns.RcodeToString[r.Rcode])
+		}
+		if len(r.Answer) != 0 {
+			t.Fatalf("Expected NODATA (no answers), got %d answers: %v", len(r.Answer), r.Answer)
+		}
+	})
+
+	t.Run("blocked_CIDR_returns_NODATA", func(t *testing.T) {
+		testInfra := NewTestInfrastructureWithDenylist(t, DenylistTestConfig{
+			DenyFileContent: "10.0.0.0/8\n",
+		})
+
+		// Query for 10.1.2.3 - should be blocked by CIDR
+		m := &dns.Msg{Question: []dns.Question{{
+			Qclass: dns.ClassINET,
+			Name:   fmt.Sprintf("10-1-2-3.%s.%s.", peerIDb36, forge),
+			Qtype:  dns.TypeA,
+		}}}
+
+		r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+		if err != nil {
+			t.Fatalf("Could not send message: %s", err)
+		}
+		if r.Rcode != dns.RcodeSuccess {
+			t.Fatalf("Expected NODATA (success with no answers), got %s", dns.RcodeToString[r.Rcode])
+		}
+		if len(r.Answer) != 0 {
+			t.Fatalf("Expected NODATA (no answers), got %d answers: %v", len(r.Answer), r.Answer)
+		}
+	})
+
+	t.Run("allowlist_overrides_denylist", func(t *testing.T) {
+		testInfra := NewTestInfrastructureWithDenylist(t, DenylistTestConfig{
+			DenyFileContent:  "10.0.0.0/8\n", // Blocks entire 10.x.x.x range
+			AllowFileContent: "10.1.2.3\n",   // Except this specific IP
+		})
+
+		// Query for 10.1.2.3 - should be allowed (allowlist overrides denylist)
+		m := &dns.Msg{Question: []dns.Question{{
+			Qclass: dns.ClassINET,
+			Name:   fmt.Sprintf("10-1-2-3.%s.%s.", peerIDb36, forge),
+			Qtype:  dns.TypeA,
+		}}}
+
+		r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+		if err != nil {
+			t.Fatalf("Could not send message: %s", err)
+		}
+		if r.Rcode != dns.RcodeSuccess {
+			t.Fatalf("Expected successful reply, got %s", dns.RcodeToString[r.Rcode])
+		}
+		if len(r.Answer) != 1 {
+			t.Fatalf("Expected 1 answer (allowlist should override), got %d", len(r.Answer))
+		}
+		if a, ok := r.Answer[0].(*dns.A); !ok || a.A.String() != "10.1.2.3" {
+			t.Fatalf("Expected A record 10.1.2.3, got %v", r.Answer[0])
+		}
+
+		// Query for 10.9.9.9 - should still be blocked (not in allowlist)
+		m2 := &dns.Msg{Question: []dns.Question{{
+			Qclass: dns.ClassINET,
+			Name:   fmt.Sprintf("10-9-9-9.%s.%s.", peerIDb36, forge),
+			Qtype:  dns.TypeA,
+		}}}
+
+		r2, err := dns.Exchange(m2, testInfra.DNSServerAddress)
+		if err != nil {
+			t.Fatalf("Could not send message: %s", err)
+		}
+		if r2.Rcode != dns.RcodeSuccess || len(r2.Answer) != 0 {
+			t.Fatalf("Expected NODATA for non-allowlisted IP 10.9.9.9, got rcode=%s answers=%v",
+				dns.RcodeToString[r2.Rcode], r2.Answer)
+		}
+	})
+
+	t.Run("ACME_registration_blocked_returns_403", func(t *testing.T) {
+		testInfra := NewTestInfrastructureWithDenylist(t, DenylistTestConfig{
+			DenyFileContent: "1.2.3.4\n",
+		})
+
+		// Create a peer with identity
+		sk, _, err := crypto.GenerateEd25519Key(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Create multiaddr with blocked IP
+		blockedMA, err := multiaddr.NewMultiaddr("/ip4/1.2.3.4/tcp/4001")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Create valid challenge value (SHA256 digest in base64url)
+		testDigest := sha256.Sum256([]byte("test-blocked"))
+		testChallenge := base64.RawURLEncoding.EncodeToString(testDigest[:])
+
+		// Attempt registration - should fail with 403
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		err = client.SendChallenge(ctx, fmt.Sprintf("http://127.0.0.1:%d", testInfra.HTTPPort), sk, testChallenge, []multiaddr.Multiaddr{blockedMA}, authToken, "", func(req *http.Request) error {
+			req.Host = forgeRegistration
+			return nil
+		})
+
+		// Should get an error containing 403 and the denylist name
+		if err == nil {
+			t.Fatal("Expected error for blocked IP registration, got nil")
+		}
+		errStr := err.Error()
+		if !strings.Contains(errStr, "403") {
+			t.Fatalf("Expected 403 error, got: %v", err)
+		}
+		if !strings.Contains(errStr, "test-deny") {
+			t.Fatalf("Expected error to mention denylist name 'test-deny', got: %v", err)
+		}
+		if !strings.Contains(errStr, "1.2.3.4") {
+			t.Fatalf("Expected error to mention blocked IP '1.2.3.4', got: %v", err)
+		}
+	})
 }

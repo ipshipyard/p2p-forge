@@ -15,6 +15,7 @@ import (
 	"github.com/coredns/coredns/plugin"
 	"github.com/miekg/dns"
 
+	"github.com/ipshipyard/p2p-forge/denylist"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -29,16 +30,11 @@ func setup(c *caddy.Controller) error {
 	if c.NextArg() {
 		forgeDomain = c.Val()
 	}
-	if c.NextArg() {
-		// If there was another token, return an error, because we don't have any configuration.
-		// Any errors returned from this setup function should be wrapped with plugin.Error, so we
-		// can present a slightly nicer error message to the user.
-		return plugin.Error(pluginName, c.ArgErr())
-	}
+
+	config := dnsserver.GetConfig(c)
 
 	// Read SOA from zone/{forgeDomain} file
 	var soa *dns.SOA
-	config := dnsserver.GetConfig(c)
 	zoneFile := filepath.Join(config.Root, "zones", forgeDomain)
 	f, err := os.Open(filepath.Clean(zoneFile))
 	if err != nil {
@@ -70,9 +66,19 @@ func setup(c *caddy.Controller) error {
 		},
 	}
 
+	p := &ipParser{
+		ForgeDomain: strings.ToLower(forgeDomain),
+		SOA:         soaRR,
+		// Denylist reference is captured at setup time. If the denylist plugin
+		// is reconfigured, this reference becomes stale. This is acceptable
+		// because CoreDNS plugin reconfiguration requires a full server restart.
+		Denylist: denylist.GetManager(),
+	}
+
 	// Add the Plugin to CoreDNS, so Servers can use it in their plugin chain.
-	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
-		return ipParser{Next: next, ForgeDomain: strings.ToLower(forgeDomain), SOA: soaRR}
+	config.AddPlugin(func(next plugin.Handler) plugin.Handler {
+		p.Next = next
+		return p
 	})
 
 	return nil
@@ -81,7 +87,8 @@ func setup(c *caddy.Controller) error {
 type ipParser struct {
 	Next        plugin.Handler
 	ForgeDomain string
-	SOA         []dns.RR // Cached SOA record from zone file
+	SOA         []dns.RR          // Cached SOA record from zone file
+	Denylist    *denylist.Manager // Optional IP denylist (nil if not configured)
 }
 
 // The TTL for self-referential ip.peerid.etld A/AAAA records can be as long as possible.
@@ -89,7 +96,7 @@ type ipParser struct {
 const ttl = 7 * 24 * time.Hour
 
 // ServeDNS implements the plugin.Handler interface.
-func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+func (p *ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	var answers []dns.RR
 	containsNODATAResponse := false
 	for _, q := range r.Question {
@@ -139,6 +146,15 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			containsNODATAResponse = true
 			dynamicResponseCount.WithLabelValues("NODATA-" + dnsToString(q.Qtype)).Add(1)
 			continue
+		}
+
+		// Check denylist (allowlists checked first internally)
+		if p.Denylist != nil {
+			if denied, result := p.Denylist.Check(ip); denied {
+				containsNODATAResponse = true
+				dynamicResponseCount.WithLabelValues("DENIED-" + result.Name).Add(1)
+				continue
+			}
 		}
 
 		switch q.Qtype {
@@ -193,7 +209,7 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 }
 
 // Name implements the Handler interface.
-func (p ipParser) Name() string { return pluginName }
+func (p *ipParser) Name() string { return pluginName }
 
 // parseIPFromPrefix converts a DNS prefix to an IP address based on query type
 func parseIPFromPrefix(prefix string, qtype uint16) (netip.Addr, error) {

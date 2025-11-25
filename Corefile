@@ -5,6 +5,19 @@ libp2p.direct {
     errors
     any # RFC 8482
     prometheus localhost:9253
+    denylist {
+        # Spamhaus DROP: hijacked IP ranges used for spam and malware
+        # Spamhaus recommends once per day; 12h is a reasonable compromise
+        feed https://www.spamhaus.org/drop/drop.txt format=ip refresh=12h name=spamhaus-drop
+        feed https://www.spamhaus.org/drop/dropv6.txt format=ip refresh=12h name=spamhaus-dropv6
+        # URLhaus: malware distribution URLs (IPs extracted)
+        # URLhaus updates every 5 minutes; use their stated minimum
+        feed https://urlhaus.abuse.ch/downloads/text/ format=url refresh=5m name=urlhaus
+        # Local allowlist: bypasses all denylists (own infrastructure, feed false positives)
+        # file ip-allowlist.txt type=allow
+        # Local denylist: quick blocks without waiting for feed updates
+        # file ip-denylist.txt
+    }
     ipparser libp2p.direct
     file zones/libp2p.direct
     acme libp2p.direct {
