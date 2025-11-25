@@ -171,6 +171,14 @@ acme FORGE_DOMAIN {
   - `dynamo TABLE_NAME` for production-grade key-value store shared across multiple instances (where all credentials are set via AWS' standard environment variables: `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
   - `badger DB_PATH` for local key-value store (good for local development and testing)
 
+#### Denylists
+
+Optional plugin for blocking IPs from requesting certificates and resolving `A`/`AAAA` records. See [docs/denylist.md](docs/denylist.md) for configuration details.
+
+#### Metrics
+
+Prometheus metrics are exposed via the standard CoreDNS metrics plugin. See [docs/METRICS.md](docs/METRICS.md) for p2p-forge specific metrics.
+
 ### Example
 
 Below is a basic example of starting a DNS server that handles the IP based domain names as well as ACME challenges.
