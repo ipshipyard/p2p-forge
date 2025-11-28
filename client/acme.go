@@ -305,8 +305,18 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 
 	// Wire up p2p-forge manager instance
 	hostChan := make(chan host.Host, 1)
-	provideHost := func(host host.Host) { hostChan <- host }
 	hasHostChan := make(chan struct{})
+	hostFn := sync.OnceValue(func() host.Host {
+		defer close(hasHostChan)
+		return <-hostChan
+	})
+	// provideHost sends host to channel and immediately resolves hostFn,
+	// ensuring hasHost() returns true right after ProvideHost is called.
+	// This prevents a race where address factory is called before Start().
+	provideHost := func(h host.Host) {
+		hostChan <- h
+		_ = hostFn()
+	}
 	hasHostFn := func() bool {
 		select {
 		case <-hasHostChan:
@@ -315,10 +325,6 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 			return false
 		}
 	}
-	hostFn := sync.OnceValue(func() host.Host {
-		defer close(hasHostChan)
-		return <-hostChan
-	})
 	mgr := &P2PForgeCertMgr{
 		forgeDomain:                mgrCfg.forgeDomain,
 		forgeRegistrationEndpoint:  mgrCfg.forgeRegistrationEndpoint,
@@ -445,6 +451,18 @@ func (m *P2PForgeCertMgr) Start() error {
 			// start internal certmagic instance
 			if err := m.certmagic.ManageAsync(m.ctx, []string{name}); err != nil {
 				log.Error(err)
+				return
+			}
+			// If cert existed in storage, explicitly set hasCert flag.
+			// This handles the race where cached_managed_cert event may not
+			// fire if the cert was already in certmagic's in-memory cache.
+			if certExists {
+				m.certCheckMx.Lock()
+				if !m.hasCert {
+					m.hasCert = true
+					log.Info("certificate is ready")
+				}
+				m.certCheckMx.Unlock()
 			}
 		}
 
