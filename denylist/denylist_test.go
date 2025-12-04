@@ -303,6 +303,115 @@ func TestFileListReload(t *testing.T) {
 	}, time.Second, 50*time.Millisecond, "file should reload with 2 entries")
 }
 
+func TestFileListDeleteAndRecreate(t *testing.T) {
+	// This test verifies that the file watcher correctly handles the scenario
+	// where a file is deleted and then recreated with new content.
+	// This is common with editors that use atomic saves (write temp, rename).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "denylist.txt")
+
+	// Create initial file
+	err := os.WriteFile(path, []byte("192.168.1.0/24\n"), 0644)
+	require.NoError(t, err)
+
+	fl, err := newFileList(fileConfig{
+		Path: path,
+		Name: "test-delete-recreate",
+		Type: listTypeDeny,
+	})
+	require.NoError(t, err)
+	defer fl.Close()
+
+	// Verify initial state
+	assert.Equal(t, 1, fl.Size())
+	testIP := netip.MustParseAddr("192.168.1.100")
+	result := fl.Check(testIP)
+	assert.True(t, result.Matched, "IP should be blocked initially")
+
+	// Delete the file
+	err = os.Remove(path)
+	require.NoError(t, err)
+
+	// Wait a bit to ensure watcher sees the delete
+	time.Sleep(150 * time.Millisecond)
+
+	// Old data should still be in memory (delete doesn't clear the prefixSet)
+	assert.Equal(t, 1, fl.Size(), "data should persist after file deletion")
+	result = fl.Check(testIP)
+	assert.True(t, result.Matched, "IP should still be blocked after file deletion")
+
+	// Recreate file with different content
+	newContent := "10.0.0.0/8\n172.16.0.0/12\n"
+	err = os.WriteFile(path, []byte(newContent), 0644)
+	require.NoError(t, err)
+
+	// Wait for reload (fsnotify Create event + 100ms debounce)
+	assert.Eventually(t, func() bool {
+		return fl.Size() == 2
+	}, 2*time.Second, 50*time.Millisecond, "file should reload with new content")
+
+	// Old IP should no longer be blocked
+	result = fl.Check(testIP)
+	assert.False(t, result.Matched, "192.168.x.x should NOT be blocked after recreate")
+
+	// New IPs should be blocked
+	result = fl.Check(netip.MustParseAddr("10.1.2.3"))
+	assert.True(t, result.Matched, "10.x.x.x should be blocked after recreate")
+
+	result = fl.Check(netip.MustParseAddr("172.16.5.5"))
+	assert.True(t, result.Matched, "172.16.x.x should be blocked after recreate")
+}
+
+func TestFileListAtomicSave(t *testing.T) {
+	// This test simulates how editors like vim perform atomic saves:
+	// 1. Write to temp file
+	// 2. Delete original
+	// 3. Rename temp to original
+	// The watcher should pick up the final content.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "denylist.txt")
+	tempPath := filepath.Join(dir, "denylist.txt.tmp")
+
+	// Create initial file
+	err := os.WriteFile(path, []byte("192.168.1.0/24\n"), 0644)
+	require.NoError(t, err)
+
+	fl, err := newFileList(fileConfig{
+		Path: path,
+		Name: "test-atomic-save",
+		Type: listTypeDeny,
+	})
+	require.NoError(t, err)
+	defer fl.Close()
+
+	assert.Equal(t, 1, fl.Size())
+
+	// Simulate atomic save:
+	// 1. Write new content to temp file
+	err = os.WriteFile(tempPath, []byte("10.0.0.0/8\n172.16.0.0/12\n203.0.113.0/24\n"), 0644)
+	require.NoError(t, err)
+
+	// 2. Remove original (some editors do this)
+	err = os.Remove(path)
+	require.NoError(t, err)
+
+	// 3. Rename temp to original
+	err = os.Rename(tempPath, path)
+	require.NoError(t, err)
+
+	// Wait for reload - rename triggers Create event
+	assert.Eventually(t, func() bool {
+		return fl.Size() == 3
+	}, 2*time.Second, 50*time.Millisecond, "file should reload after atomic save")
+
+	// Verify new content is active
+	result := fl.Check(netip.MustParseAddr("10.5.5.5"))
+	assert.True(t, result.Matched, "10.x.x.x should be blocked")
+
+	result = fl.Check(netip.MustParseAddr("192.168.1.1"))
+	assert.False(t, result.Matched, "192.168.x.x should NOT be blocked (old content)")
+}
+
 func TestFeedList(t *testing.T) {
 	// Create test server
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -362,6 +471,79 @@ func TestFeedListNotModified(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, count) // Same count, no parse
 	assert.Equal(t, int32(2), requestCount.Load())
+}
+
+func TestFeedList304PreservesData(t *testing.T) {
+	// This test verifies that when a feed returns HTTP 304 Not Modified,
+	// the existing data is preserved and continues to work correctly.
+	var requestCount atomic.Int32
+	lastModified := "Mon, 02 Jan 2006 15:04:05 GMT"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+
+		// Check If-Modified-Since header is correctly formatted
+		ims := r.Header.Get("If-Modified-Since")
+		if ims != "" {
+			assert.Equal(t, lastModified, ims, "If-Modified-Since should match Last-Modified")
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+
+		w.Header().Set("Last-Modified", lastModified)
+		io.WriteString(w, "192.168.1.0/24\n10.0.0.0/8\n")
+	}))
+	defer srv.Close()
+
+	fl, err := newFeedList(feedConfig{
+		URL:     srv.URL,
+		Format:  formatIP,
+		Name:    "test-304",
+		Type:    listTypeDeny,
+		Refresh: time.Hour,
+	})
+	require.NoError(t, err)
+	defer fl.Close()
+
+	// Wait for initial fetch
+	assert.Eventually(t, func() bool { return fl.Size() == 2 }, time.Second, 10*time.Millisecond)
+	assert.Equal(t, int32(1), requestCount.Load())
+
+	// Verify data works before 304
+	testIP := netip.MustParseAddr("192.168.1.100")
+	result := fl.Check(testIP)
+	assert.True(t, result.Matched, "IP should be blocked before 304")
+
+	// Trigger update - should get 304
+	ctx := context.Background()
+	count, err := fl.Update(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count, "count should remain 2 after 304")
+	assert.Equal(t, int32(2), requestCount.Load())
+
+	// Verify data is STILL valid after 304 response
+	result = fl.Check(testIP)
+	assert.True(t, result.Matched, "IP should still be blocked after 304")
+
+	// Also verify other IP in the list still works
+	result = fl.Check(netip.MustParseAddr("10.1.2.3"))
+	assert.True(t, result.Matched, "10.x.x.x IP should still be blocked after 304")
+
+	// And verify non-blocked IP is still not blocked
+	result = fl.Check(netip.MustParseAddr("8.8.8.8"))
+	assert.False(t, result.Matched, "8.8.8.8 should not be blocked")
+
+	// Trigger multiple 304s to ensure stability
+	for i := 0; i < 3; i++ {
+		_, err := fl.Update(ctx)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, int32(5), requestCount.Load()) // 1 initial + 4 updates
+
+	// Data should still be intact
+	assert.Equal(t, 2, fl.Size())
+	result = fl.Check(testIP)
+	assert.True(t, result.Matched, "IP should be blocked after multiple 304s")
 }
 
 func TestManager(t *testing.T) {
