@@ -4,15 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/libp2p/go-libp2p/core/network"
 
 	"go.uber.org/zap"
 
@@ -45,6 +43,17 @@ type P2PForgeCertMgr struct {
 
 	hasCert     bool // tracking if we've received a certificate
 	certCheckMx sync.RWMutex
+
+	// onCertLoaded is the user callback for when forge addresses become available.
+	// On obtain path: called after cert is ready AND reachability confirmed.
+	// On cached path: called immediately after cert loads (ConfirmedAddrs filters).
+	onCertLoaded func()
+
+	// certReady signals that a valid certificate is available (closed when ready).
+	// Used to coordinate between certmagic's OnEvent (which signals) and Start()
+	// (which orchestrates callback timing based on reachability requirements).
+	certReady     chan struct{}
+	certReadyOnce sync.Once
 }
 
 func isRelayAddr(a ma.Multiaddr) bool {
@@ -335,6 +344,8 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
 		produceShortAddrs:          mgrCfg.produceShortAddrs,
 		registrationDelay:          mgrCfg.registrationDelay,
+		onCertLoaded:               mgrCfg.onCertLoaded,
+		certReady:                  make(chan struct{}),
 	}
 
 	// NOTE: callback getter is necessary to avoid circular dependency
@@ -379,7 +390,10 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	})
 	mgr.certmagic.Issuers = []certmagic.Issuer{brokeredDNS01Issuer}
 
-	// Wire up onCertLoaded callback
+	// Wire up certmagic event handler.
+	// OnEvent only updates state and signals readiness via channel.
+	// The onCertLoaded callback is called by Start() which orchestrates
+	// timing based on reachability requirements.
 	mgr.certmagic.OnEvent = func(ctx context.Context, event string, data map[string]any) error {
 		if event == "cached_managed_cert" {
 			sans, ok := data["sans"]
@@ -394,21 +408,18 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 			name := certName(hostFn().ID(), mgrCfg.forgeDomain)
 			for _, san := range sanList {
 				if san == name {
-					// When the certificate is loaded mark that it has been so we know we are good to use the domain name
-					// TODO: This won't handle if the cert expires and cannot get renewed
 					mgr.certCheckMx.Lock()
 					mgr.hasCert = true
 					mgr.certCheckMx.Unlock()
-					// Execute user function for on certificate load
-					if mgrCfg.onCertLoaded != nil {
-						mgrCfg.onCertLoaded()
-					}
+					// Signal cert readiness (idempotent via sync.Once)
+					mgr.certReadyOnce.Do(func() { close(mgr.certReady) })
+					break
 				}
 			}
 			return nil
 		}
 
-		// Execute user function for on certificate cert renewal
+		// Execute user function for certificate renewal
 		if event == "cert_obtained" && mgrCfg.onCertRenewed != nil {
 			if renewal, ok := data["renewal"].(bool); ok && renewal {
 				name := certName(hostFn().ID(), mgrCfg.forgeDomain)
@@ -438,128 +449,153 @@ func (m *P2PForgeCertMgr) Start() error {
 		log := m.log.Named("start")
 		h := m.hostFn()
 		name := certName(h.ID(), m.forgeDomain)
-		certExists := localCertExists(m.ctx, m.certmagic, name)
+		needsReachability := !m.allowPrivateForgeAddresses
+
+		// === Certificate Path Determination ===
+		//
+		// We have two distinct paths based on certificate state:
+		//
+		// 1. OBTAIN PATH (no cert in storage, or cert needs renewal):
+		//    - CertMagic will contact p2p-forge to register and obtain/renew cert
+		//    - p2p-forge verifies node is reachable before setting DNS records
+		//    - We MUST wait for AutoNAT to confirm reachability first
+		//    - This prevents wasted registration attempts on unreachable nodes
+		//
+		// 2. CACHED PATH (valid cert in storage, no renewal needed):
+		//    - CertMagic just loads cert from disk, no network requests
+		//    - Callback fires immediately after cert is loaded
+		//    - Address factory's ConfirmedAddrs() filters unreachable addrs dynamically
+		//    - This makes subsequent startups near-instant
+		//
+		certInStorage := m.localCertExists(m.ctx, name)
+		certNeedsRenewal := certInStorage && m.localCertNeedsRenewal(m.ctx, name)
+
+		// willObtainCert is true when CertMagic will attempt ACME flow (new or renewal).
+		// This requires network requests to p2p-forge, so we must verify reachability first.
+		willObtainCert := !certInStorage || certNeedsRenewal
+
 		startCertManagement := func() {
-			// respect WithRegistrationDelay if no cert exists
-			if !certExists && m.registrationDelay != 0 {
+			// Respect WithRegistrationDelay when obtaining new cert
+			if willObtainCert && m.registrationDelay != 0 {
 				remainingDelay := m.registrationDelay - time.Since(start)
 				if remainingDelay > 0 {
 					log.Infof("registration delay set to %s, sleeping for remaining %s", m.registrationDelay, remainingDelay)
 					time.Sleep(remainingDelay)
 				}
 			}
-			// start internal certmagic instance
+			// Start internal certmagic instance
 			if err := m.certmagic.ManageAsync(m.ctx, []string{name}); err != nil {
 				log.Error(err)
 				return
 			}
-			// If cert existed in storage, explicitly set hasCert flag.
+			// On cached path: explicitly set hasCert flag and signal readiness.
 			// This handles the race where cached_managed_cert event may not
 			// fire if the cert was already in certmagic's in-memory cache.
-			if certExists {
+			// NOTE: We set hasCert immediately for cached path - no reachability
+			// blocking. The address factory's ConfirmedAddrs() filtering will
+			// dynamically remove unreachable addresses once AutoNAT runs.
+			if !willObtainCert {
 				m.certCheckMx.Lock()
-				if !m.hasCert {
-					m.hasCert = true
-					log.Info("certificate is ready")
-				}
+				m.hasCert = true
 				m.certCheckMx.Unlock()
+				m.certReadyOnce.Do(func() { close(m.certReady) })
+				log.Info("certificate loaded from cache")
 			}
 		}
 
-		if certExists {
-			log.Infof("found preexisting cert for %q in local storage", name)
-		} else {
-			log.Infof("no cert found for %q", name)
+		// waitCertReady blocks until cert is available or context cancelled
+		waitCertReady := func() bool {
+			select {
+			case <-m.certReady:
+				return true
+			case <-m.ctx.Done():
+				return false
+			}
 		}
 
-		// Start immediatelly if either:
-		// (A) preexisting certificate is found in certmagic storage
-		// (B) allowPrivateForgeAddresses flag is set
-		if certExists || m.allowPrivateForgeAddresses {
-			startCertManagement()
-		} else {
-			// No preexisting cert found.
-			// We will get a new one, but don't want to ask for one
-			// if our node is not publicly diallable.
-			// To avoid ERROR(s) in log and unnecessary retries we wait for libp2p
-			// confirmation that node is publicly reachable before sending
-			// multiaddrs to p2p-forge's registration endpoint.
-			withHostConnectivity(m.ctx, log, h, startCertManagement)
+		// fireCallback invokes user's onCertLoaded if set
+		fireCallback := func() {
+			if m.onCertLoaded != nil {
+				m.onCertLoaded()
+			}
 		}
+
+		// Log which path we're on
+		if !certInStorage {
+			log.Infof("no cert found for %q, will obtain from CA", name)
+		} else if certNeedsRenewal {
+			log.Infof("cert for %q needs renewal, will obtain from CA", name)
+		} else {
+			log.Infof("valid cert for %q found in storage, using cached path", name)
+		}
+
+		// === Flow ===
+		//
+		// OBTAIN PATH (new cert or renewal):
+		//   1. Wait for AutoNAT reachability
+		//   2. Start cert management (triggers ACME flow)
+		//   3. Wait for cert to be ready
+		//   4. Fire callback
+		//
+		// CACHED PATH (valid cert exists):
+		//   1. Load cert from storage, set hasCert immediately
+		//   2. Fire callback
+		//
+		// Address factory's ConfirmedAddrs() filtering handles reachability
+		// dynamically - unreachable addresses are filtered as AutoNAT runs.
+
+		// Obtain path: wait for AutoNAT before requesting cert
+		if willObtainCert && needsReachability {
+			if !waitForAutoNATReachability(m.ctx, log, h) {
+				return
+			}
+		}
+
+		// Start certificate management
+		startCertManagement()
+
+		// Obtain path: wait for cert to be ready
+		if willObtainCert {
+			if !waitCertReady() {
+				return
+			}
+		}
+
+		fireCallback()
 	}()
 	return nil
 }
 
-// withHostConnectivity executes callback func only after certain libp2p connectivity checks / criteria against passed host are fullfilled.
-// It will also delay registration to ensure user-set registrationDelay is respected.
-// The main purpose is to not bother CA ACME endpoint or p2p-forge registration endpoint if we know the peer is not
-// ready to use TLS cert.
-func withHostConnectivity(ctx context.Context, log *zap.SugaredLogger, h host.Host, callback func()) {
-	log.Infof("waiting until libp2p reports event network.ReachabilityPublic")
-	localReachabilitySub, err := h.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
-	if err != nil {
-		log.Error(err)
-		return
-	}
-	defer localReachabilitySub.Close()
+// waitForAutoNATReachability blocks until AutoNAT confirms public reachability.
+// Used for new cert path where we must verify reachability before requesting cert.
+// Returns true if reachability was confirmed, false if context was cancelled.
+func waitForAutoNATReachability(ctx context.Context, log *zap.SugaredLogger, h host.Host) bool {
+	log.Infof("waiting for AutoNAT to confirm public reachability")
 
+	// Subscribe to AutoNAT v2 event for per-address reachability
 	addrsReachabilitySub, err := h.EventBus().Subscribe(new(event.EvtHostReachableAddrsChanged))
 	if err != nil {
 		log.Error(err)
-		return
+		return false
 	}
 	defer addrsReachabilitySub.Close()
 
-	// We handle both autonatv1 and autonatv2 events.
-	// In case we get an autonatv1 public event we wait till we actually have a public addr
-	// before returning.
-	// In a future release, we'll remove the dependence on v1 event completely and only use
-	// the autonatv2 event.
-	timer := time.NewTimer(math.MaxInt64)
-	defer timer.Stop()
-	currDelay := time.Second
-	minDelay := 5 * time.Second
-	maxDelay := time.Minute
 	for {
 		select {
-		case e := <-localReachabilitySub.Out():
-			evt := e.(event.EvtLocalReachabilityChanged) // guaranteed safe
-			log.Infof("libp2p reachability status changed to %s", evt.Reachability)
-			if evt.Reachability == network.ReachabilityPublic {
-				timer.Reset(-1 * time.Second)
-				currDelay = -1 * time.Second
-			} else {
-				log.Infof("certificate will not be requested while libp2p reachability status is not public")
-				timer.Reset(math.MaxInt64)
-			}
-		case <-timer.C:
-			addrs := h.Addrs()
-			for _, a := range addrs {
-				if !isRelayAddr(a) && isTCPAddr(a) && isPublicAddr(a) {
-					callback()
-					return
-				}
-			}
-			log.Infof("certificate will not be requested as we don't have any public addrs")
-			currDelay *= 2
-			currDelay = min(currDelay, maxDelay)
-			currDelay = max(currDelay, minDelay)
-			timer.Reset(currDelay)
 		case e := <-addrsReachabilitySub.Out():
 			evt := e.(event.EvtHostReachableAddrsChanged)
-			log.Infof("libp2p reachable addrs changed to %s", evt.Reachable)
+			log.Infof("AutoNAT v2 reachable addrs changed: %v", evt.Reachable)
 			for _, a := range evt.Reachable {
 				if !isRelayAddr(a) && isTCPAddr(a) { // guaranteed to be public
-					callback()
-					return
+					return true
 				}
 			}
-			log.Infof("certificate will not be requested if we don't have any reachable tcp addrs")
+			log.Infof("no reachable tcp addrs yet")
 		case <-ctx.Done():
 			if ctx.Err() != context.Canceled {
-				log.Error(fmt.Errorf("aborted while waiting for libp2p reachability status discovery: %w", ctx.Err()))
+				log.Error(fmt.Errorf("aborted while waiting for public reachability: %w", ctx.Err()))
 			}
-			return
+			return false
 		}
 	}
 }
@@ -594,13 +630,69 @@ func (m *P2PForgeCertMgr) AddressFactory() config.AddrsFactory {
 }
 
 // localCertExists returns true if a certificate matching passed name is already present in certmagic.Storage
-func localCertExists(ctx context.Context, cfg *certmagic.Config, name string) bool {
+func (m *P2PForgeCertMgr) localCertExists(ctx context.Context, name string) bool {
+	cfg := m.certmagic
 	if cfg == nil || cfg.Storage == nil || len(cfg.Issuers) == 0 {
 		return false
 	}
-	acmeIssuer := cfg.Issuers[0].(*certmagic.ACMEIssuer)
+	acmeIssuer, ok := cfg.Issuers[0].(*certmagic.ACMEIssuer)
+	if !ok {
+		m.log.Errorf("unexpected issuer type %T, expected *certmagic.ACMEIssuer", cfg.Issuers[0])
+		return false
+	}
 	certKey := certmagic.StorageKeys.SiteCert(acmeIssuer.IssuerKey(), name)
 	return cfg.Storage.Exists(ctx, certKey)
+}
+
+// localCertNeedsRenewal checks if the certificate in storage is within the
+// renewal window. CertMagic renews certificates when 1/3 of their lifetime
+// remains (~30 days for Let's Encrypt 90-day certs).
+//
+// We check this to determine if CertMagic will attempt renewal on startup.
+// If renewal is needed, the node is effectively on the "obtain path" and we
+// should wait for AutoNAT before starting cert management to avoid wasted
+// p2p-forge registration attempts on nodes that aren't publicly reachable.
+//
+// Returns false if cert doesn't exist, can't be loaded, or can't be parsed.
+// Caller should use localCertExists() first to distinguish "no cert" from
+// "valid cert that doesn't need renewal".
+func (m *P2PForgeCertMgr) localCertNeedsRenewal(ctx context.Context, name string) bool {
+	cfg := m.certmagic
+	if cfg == nil || cfg.Storage == nil || len(cfg.Issuers) == 0 {
+		return false
+	}
+
+	// Load cert from storage
+	acmeIssuer, ok := cfg.Issuers[0].(*certmagic.ACMEIssuer)
+	if !ok {
+		m.log.Errorf("unexpected issuer type %T, expected *certmagic.ACMEIssuer", cfg.Issuers[0])
+		return false
+	}
+	certKey := certmagic.StorageKeys.SiteCert(acmeIssuer.IssuerKey(), name)
+	certData, err := cfg.Storage.Load(ctx, certKey)
+	if err != nil {
+		m.log.Errorf("failed to load cert for renewal check: %v", err)
+		return false
+	}
+
+	// Parse PEM-encoded certificate
+	block, _ := pem.Decode(certData)
+	if block == nil {
+		m.log.Errorf("failed to PEM-decode cert for renewal check")
+		return false
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		m.log.Errorf("failed to parse cert for renewal check: %v", err)
+		return false
+	}
+
+	// Check if within renewal window (1/3 of lifetime remaining, matching CertMagic default)
+	lifetime := cert.NotAfter.Sub(cert.NotBefore)
+	renewalWindow := lifetime / 3
+	renewalStart := cert.NotAfter.Add(-renewalWindow)
+
+	return time.Now().After(renewalStart)
 }
 
 // certName returns a string with DNS wildcard for use in TLS cert ("*.peerid.forgeDomain")
