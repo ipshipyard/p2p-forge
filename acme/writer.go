@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"github.com/coredns/coredns/plugin/pkg/reuseport"
 	"github.com/felixge/httpsnoop"
 	"github.com/ipshipyard/p2p-forge/client"
+	"github.com/ipshipyard/p2p-forge/denylist"
 	"github.com/prometheus/client_golang/prometheus"
 
 	metrics "github.com/slok/go-http-metrics/metrics/prometheus"
@@ -148,6 +150,13 @@ func (c *acmeWriter) OnStartup() error {
 			if len(decodedValue) != 32 {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte("value is not a base64url of a SHA256 digest"))
+				return
+			}
+
+			// Check denylist before attempting to connect
+			if blocked, reason := checkDenylist(clientIPs(r), typedBody.Addresses); blocked {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(fmt.Sprintf("403 Forbidden: %s", reason)))
 				return
 			}
 
@@ -293,6 +302,35 @@ func agentType(agentVersion string) string {
 type requestBody struct {
 	Value     string   `json:"value"`
 	Addresses []string `json:"addresses"`
+}
+
+// checkDenylist checks client IPs and multiaddr IPs against denylist.
+// Returns (blocked, reason) where reason describes which IP was blocked.
+// Blocks if ANY IP is denied.
+func checkDenylist(clientIPs []netip.Addr, multiaddrs []string) (bool, string) {
+	mgr := denylist.GetManager()
+	if mgr == nil {
+		return false, ""
+	}
+
+	// Check all client IPs (XFF and RemoteAddr)
+	for _, client := range clientIPs {
+		if !client.IsValid() {
+			continue
+		}
+		if denied, result := mgr.Check(client); denied {
+			return true, fmt.Sprintf("client IP %s blocked by %s", client, result.Name)
+		}
+	}
+
+	// Check multiaddr IPs
+	for _, ip := range multiaddrsToIPs(multiaddrs) {
+		if denied, result := mgr.Check(ip); denied {
+			return true, fmt.Sprintf("multiaddr IP %s blocked by %s", ip, result.Name)
+		}
+	}
+
+	return false, ""
 }
 
 func (c *acmeWriter) OnFinalShutdown() error {

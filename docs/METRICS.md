@@ -15,6 +15,14 @@ It includes default [Prometheus Go client metrics](https://prometheus.io/docs/gu
   - `type=AAAA` - successful IPv6 response
   - `type=NODATA-{qtype}` - query type not supported for this domain (e.g., TXT, MX)
   - `type=NODATA-PEERID-{qtype}` - query to bare `peerid.domain` (no IP prefix)
+  - `type=DENIED-{list}` - IP blocked by denylist
+
+#### `denylist` plugin (shared by ipparser and acme)
+
+- `coredns_forge_denylist_denied_total{name}` - IPs denied, by list name
+- `coredns_forge_denylist_allowed_total{name}` - IPs allowed (allowlist match), by list name
+- `coredns_forge_denylist_entries{name,type}` - number of entries per list
+- `coredns_forge_denylist_last_update_timestamp{name}` - last update unix timestamp per list
 
 #### `acme` plugin (HTTP registration + DNS-01)
 

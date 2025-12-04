@@ -15,6 +15,7 @@ import (
 )
 
 var p2pForgeDirectives = []string{
+	"denylist", // must be first - provides Manager for ipparser and acme
 	"ipparser",
 	"acme",
 }
