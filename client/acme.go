@@ -152,7 +152,7 @@ func WithUserEmail(email string) P2PForgeCertMgrOptions {
 	}
 }
 
-// WithForgeAuth sets optional secret be sent with requests to the forge
+// WithForgeAuth sets optional secret to be sent with requests to the forge
 // registration endpoint.
 func WithForgeAuth(forgeAuth string) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
@@ -454,7 +454,7 @@ func (m *P2PForgeCertMgr) Start() error {
 			log.Infof("no cert found for %q", name)
 		}
 
-		// Start immediatelly if either:
+		// Start immediately if either:
 		// (A) preexisting certificate is found in certmagic storage
 		// (B) allowPrivateForgeAddresses flag is set
 		if certExists || m.allowPrivateForgeAddresses {
@@ -462,7 +462,7 @@ func (m *P2PForgeCertMgr) Start() error {
 		} else {
 			// No preexisting cert found.
 			// We will get a new one, but don't want to ask for one
-			// if our node is not publicly diallable.
+			// if our node is not publicly dialable.
 			// To avoid ERROR(s) in log and unnecessary retries we wait for libp2p
 			// confirmation that node is publicly reachable before sending
 			// multiaddrs to p2p-forge's registration endpoint.
@@ -472,7 +472,7 @@ func (m *P2PForgeCertMgr) Start() error {
 	return nil
 }
 
-// withHostConnectivity executes callback func only after certain libp2p connectivity checks / criteria against passed host are fullfilled.
+// withHostConnectivity executes callback func only after certain libp2p connectivity checks / criteria against passed host are fulfilled.
 // It will also delay registration to ensure user-set registrationDelay is respected.
 // The main purpose is to not bother CA ACME endpoint or p2p-forge registration endpoint if we know the peer is not
 // ready to use TLS cert.
@@ -643,7 +643,7 @@ func (d *dns01P2PForgeSolver) Wait(ctx context.Context, challenge acme.Challenge
 	// Check if DNS-01 TXT record is correctly published by the p2p-forge
 	// backend. This step ensures we are good citizens: we don't want to move
 	// further and bother ACME endpoint with work if we are not confident
-	// DNS-01 chalelnge will be successful.
+	// DNS-01 challenge will be successful.
 	// We check fast, with backoff to avoid spamming DNS.
 	pollInterval := 1 * time.Second
 	maxPollInterval := 1 * time.Minute
