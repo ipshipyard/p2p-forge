@@ -3,7 +3,7 @@ $ORIGIN libp2p.direct.
 
 ;; SOA Records
 @                               86400   IN      SOA     aws1.libp2p.direct. domains.ipshipyard.com. (
-                                                        2025022501  ; serial
+                                                        2026032701  ; serial
                                                         86400       ; refresh
                                                         2400        ; retry
                                                         604800      ; expire
@@ -17,6 +17,7 @@ $ORIGIN libp2p.direct.
 libp2p.direct.                  86400   IN      NS      aws1.libp2p.direct.
 libp2p.direct.                  86400   IN      NS      aws2.libp2p.direct.
 libp2p.direct.                  86400   IN      NS      ovh1.libp2p.direct.
+libp2p.direct.                  86400   IN      NS      ovh2.libp2p.direct.
 
 ;; manual legacy dev
 ;libp2p.direct.                  86400   IN      NS      ns1.libp2p.direct.
@@ -33,6 +34,10 @@ aws2.libp2p.direct.             86400   IN      AAAA    2600:1f16:f2:9801:e482:8
 ;; ovh-libp2p-direct-01
 ovh1.libp2p.direct.             86400   IN      A       15.204.30.239
 ovh1.libp2p.direct.             86400   IN      AAAA    2604:2dc0:202:200::80d
+
+;; ovh-libp2p-direct-02
+ovh2.libp2p.direct.             86400   IN      A       147.135.78.6
+ovh2.libp2p.direct.             86400   IN      AAAA    2604:2dc0:101:100::16d9
 
 ;; dev1
 ns1.libp2p.direct.              86400   IN      A       40.160.8.207
