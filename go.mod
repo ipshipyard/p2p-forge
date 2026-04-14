@@ -14,7 +14,7 @@ require (
 	github.com/ipfs/go-datastore v0.8.2
 	github.com/ipfs/go-ds-badger4 v0.1.8
 	github.com/ipfs/go-ds-dynamodb v0.2.2
-	github.com/ipfs/go-log/v2 v2.6.0
+	github.com/ipfs/go-log/v2 v2.9.1
 	github.com/joho/godotenv v1.5.1
 	github.com/letsencrypt/pebble/v2 v2.7.0
 	github.com/libp2p/go-libp2p v0.48.0
@@ -26,7 +26,7 @@ require (
 	github.com/prometheus/client_golang v1.23.0
 	github.com/slok/go-http-metrics v0.12.0
 	github.com/stretchr/testify v1.11.1
-	go.uber.org/zap v1.27.0
+	go.uber.org/zap v1.27.1
 )
 
 require (
