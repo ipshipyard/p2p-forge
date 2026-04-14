@@ -13,7 +13,7 @@ require (
 	github.com/gaissmai/bart v0.26.0
 	github.com/ipfs/go-datastore v0.8.2
 	github.com/ipfs/go-ds-badger4 v0.1.8
-	github.com/ipfs/go-ds-dynamodb v0.2.0
+	github.com/ipfs/go-ds-dynamodb v0.2.2
 	github.com/ipfs/go-log/v2 v2.6.0
 	github.com/joho/godotenv v1.5.1
 	github.com/letsencrypt/pebble/v2 v2.7.0
