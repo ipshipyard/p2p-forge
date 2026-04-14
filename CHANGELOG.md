@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 🛠 - BREAKING CHANGE
 - ✨ - Noteworthy change
 
+## [v0.7.1] - unreleased
+
+### Changed
+- Bumped `google.golang.org/grpc` to v1.79.3, clearing CVE-2026-33186 from SBOM scanners (not exploitable in p2p-forge at runtime; no gRPC listener is exposed)
+- Bumped `go-libp2p` to v0.48.0 and `coredns` to v1.14.2 to match the new `quic-go` v0.59.0 that ships with go-libp2p
+- Bumped `go-ds-dynamodb` to v0.2.2 and `go-log` to v2.9.1
+- Pinned `coredns/caddy` to the tagged v1.1.4 release in place of the pre-release master snapshot inherited from coredns
+- Wired the go-log slog bridge in `main.go`, required by go-log v2.9 and go-libp2p v0.45+, so libp2p subsystem logs flow through go-log and respond to `golog.SetLogLevel`
+
 ## [v0.6.1] - 2025-07-30
 
 ### Fixed
