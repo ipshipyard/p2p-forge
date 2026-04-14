@@ -6,7 +6,7 @@ go 1.25.7
 require (
 	github.com/aws/aws-sdk-go v1.55.6
 	github.com/caddyserver/certmagic v0.21.6
-	github.com/coredns/caddy v1.1.4-0.20250930002214-15135a999495
+	github.com/coredns/caddy v1.1.4
 	github.com/coredns/coredns v1.14.2
 	github.com/felixge/httpsnoop v1.0.4
 	github.com/fsnotify/fsnotify v1.9.0
