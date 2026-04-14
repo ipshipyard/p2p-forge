@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 
 	// Load CoreDNS + p2p-forge plugins
 	_ "github.com/ipshipyard/p2p-forge/plugins"
@@ -11,8 +12,21 @@ import (
 	"github.com/coredns/coredns/coremain"
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 
+	golog "github.com/ipfs/go-log/v2"
+	"github.com/libp2p/go-libp2p/gologshim"
+
 	"github.com/joho/godotenv"
 )
+
+func init() {
+	// Route stdlib slog and go-libp2p's gologshim through go-log so
+	// libp2p subsystem logs share formatting and level control
+	// (golog.SetLogLevel) with the rest of go-log output.
+	// Required since go-log v2.9 + go-libp2p v0.45; see
+	// https://github.com/ipfs/go-log/releases/tag/v2.9.0
+	slog.SetDefault(slog.New(golog.SlogHandler()))
+	gologshim.SetDefaultHandler(golog.SlogHandler())
+}
 
 var p2pForgeDirectives = []string{
 	"denylist", // must be first - provides Manager for ipparser and acme
