@@ -2,6 +2,7 @@ package ipparser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/coredns/coredns/plugin"
 	"github.com/miekg/dns"
 
+	"github.com/ipshipyard/p2p-forge/denylist"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -28,16 +30,11 @@ func setup(c *caddy.Controller) error {
 	if c.NextArg() {
 		forgeDomain = c.Val()
 	}
-	if c.NextArg() {
-		// If there was another token, return an error, because we don't have any configuration.
-		// Any errors returned from this setup function should be wrapped with plugin.Error, so we
-		// can present a slightly nicer error message to the user.
-		return plugin.Error(pluginName, c.ArgErr())
-	}
+
+	config := dnsserver.GetConfig(c)
 
 	// Read SOA from zone/{forgeDomain} file
 	var soa *dns.SOA
-	config := dnsserver.GetConfig(c)
 	zoneFile := filepath.Join(config.Root, "zones", forgeDomain)
 	f, err := os.Open(filepath.Clean(zoneFile))
 	if err != nil {
@@ -69,9 +66,19 @@ func setup(c *caddy.Controller) error {
 		},
 	}
 
+	p := &ipParser{
+		ForgeDomain: strings.ToLower(forgeDomain),
+		SOA:         soaRR,
+		// Denylist reference is captured at setup time. If the denylist plugin
+		// is reconfigured, this reference becomes stale. This is acceptable
+		// because CoreDNS plugin reconfiguration requires a full server restart.
+		Denylist: denylist.GetManager(),
+	}
+
 	// Add the Plugin to CoreDNS, so Servers can use it in their plugin chain.
-	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
-		return ipParser{Next: next, ForgeDomain: strings.ToLower(forgeDomain), SOA: soaRR}
+	config.AddPlugin(func(next plugin.Handler) plugin.Handler {
+		p.Next = next
+		return p
 	})
 
 	return nil
@@ -80,7 +87,8 @@ func setup(c *caddy.Controller) error {
 type ipParser struct {
 	Next        plugin.Handler
 	ForgeDomain string
-	SOA         []dns.RR // Cached SOA record from zone file
+	SOA         []dns.RR          // Cached SOA record from zone file
+	Denylist    *denylist.Manager // Optional IP denylist (nil if not configured)
 }
 
 // The TTL for self-referential ip.peerid.etld A/AAAA records can be as long as possible.
@@ -88,7 +96,7 @@ type ipParser struct {
 const ttl = 7 * 24 * time.Hour
 
 // ServeDNS implements the plugin.Handler interface.
-func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+func (p *ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	var answers []dns.RR
 	containsNODATAResponse := false
 	for _, q := range r.Question {
@@ -104,6 +112,7 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		}
 
 		peerIDStr := domainSegments[len(domainSegments)-1]
+
 		_, err := peer.Decode(peerIDStr)
 		if err != nil {
 			continue
@@ -117,21 +126,39 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		}
 
 		prefix := domainSegments[0]
-		segments := strings.Split(prefix, "-")
-		if len(segments) == 4 {
-			ipStr := strings.Join(segments, ".")
-			ip, err := netip.ParseAddr(ipStr)
-			if err != nil {
-				continue
-			}
 
-			// Need to handle <ipv4>.<peerID>.forgeDomain to return NODATA rather than NXDOMAIN per https://datatracker.ietf.org/doc/html/rfc8020
-			if !(q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY) {
+		// Skip ACME challenge domains - let them pass through to acme plugin
+		if strings.HasPrefix(prefix, "_acme-challenge") {
+			continue
+		}
+
+		// Only handle A and AAAA queries - return NODATA for other query types on IP domains
+		if q.Qtype != dns.TypeA && q.Qtype != dns.TypeAAAA {
+			containsNODATAResponse = true
+			dynamicResponseCount.WithLabelValues("NODATA-" + dnsToString(q.Qtype)).Add(1)
+			continue
+		}
+
+		// Parse IP based on query type - parseIPFromPrefix handles all validation
+		ip, err := parseIPFromPrefix(prefix, q.Qtype)
+		if err != nil {
+			// For invalid IPs, return NODATA
+			containsNODATAResponse = true
+			dynamicResponseCount.WithLabelValues("NODATA-" + dnsToString(q.Qtype)).Add(1)
+			continue
+		}
+
+		// Check denylist (allowlists checked first internally)
+		if p.Denylist != nil {
+			if denied, result := p.Denylist.Check(ip); denied {
 				containsNODATAResponse = true
-				dynamicResponseCount.WithLabelValues("NODATA-" + dnsToString(q.Qtype)).Add(1)
+				dynamicResponseCount.WithLabelValues("DENIED-" + result.Name).Add(1)
 				continue
 			}
+		}
 
+		switch q.Qtype {
+		case dns.TypeA:
 			answers = append(answers, &dns.A{
 				Hdr: dns.RR_Header{
 					Name:   dns.Fqdn(q.Name),
@@ -142,36 +169,19 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 				A: ip.AsSlice(),
 			})
 			dynamicResponseCount.WithLabelValues("A").Add(1)
-			continue
-		}
 
-		// - is not a valid first or last character https://datatracker.ietf.org/doc/html/rfc1123#section-2
-		if prefix[0] == '-' || prefix[len(prefix)-1] == '-' {
-			continue
+		case dns.TypeAAAA:
+			answers = append(answers, &dns.AAAA{
+				Hdr: dns.RR_Header{
+					Name:   dns.Fqdn(q.Name),
+					Rrtype: dns.TypeAAAA,
+					Class:  dns.ClassINET,
+					Ttl:    uint32(ttl.Seconds()),
+				},
+				AAAA: ip.AsSlice(),
+			})
+			dynamicResponseCount.WithLabelValues("AAAA").Add(1)
 		}
-
-		prefixAsIpv6 := strings.Join(segments, ":")
-		ip, err := netip.ParseAddr(prefixAsIpv6)
-		if err != nil {
-			continue
-		}
-
-		if !(q.Qtype == dns.TypeAAAA || q.Qtype == dns.TypeANY) {
-			containsNODATAResponse = true
-			dynamicResponseCount.WithLabelValues("NODATA-" + dnsToString(q.Qtype)).Add(1)
-			continue
-		}
-
-		answers = append(answers, &dns.AAAA{
-			Hdr: dns.RR_Header{
-				Name:   dns.Fqdn(q.Name),
-				Rrtype: dns.TypeAAAA,
-				Class:  dns.ClassINET,
-				Ttl:    uint32(ttl.Seconds()),
-			},
-			AAAA: ip.AsSlice(),
-		})
-		dynamicResponseCount.WithLabelValues("AAAA").Add(1)
 	}
 
 	if len(answers) > 0 || containsNODATAResponse {
@@ -199,4 +209,34 @@ func (p ipParser) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 }
 
 // Name implements the Handler interface.
-func (p ipParser) Name() string { return pluginName }
+func (p *ipParser) Name() string { return pluginName }
+
+// parseIPFromPrefix converts a DNS prefix to an IP address based on query type
+func parseIPFromPrefix(prefix string, qtype uint16) (netip.Addr, error) {
+	segments := strings.Split(prefix, "-")
+
+	switch qtype {
+	case dns.TypeA:
+		ipStr := strings.Join(segments, ".")
+		if ip, err := netip.ParseAddr(ipStr); err == nil && ip.Is4() {
+			return ip, nil
+		}
+		return netip.Addr{}, fmt.Errorf("invalid IPv4 address: %s", ipStr)
+
+	case dns.TypeAAAA:
+		ipStr := strings.Join(segments, ":")
+		if ip, err := netip.ParseAddr(ipStr); err == nil && ip.Is6() {
+			// Zone IDs like %eth0 can't appear in DNS labels (RFC 1035).
+			// While netip.ParseAddr already rejects them, this check provides
+			// defense if parsing behavior changes or malformed input gets through.
+			if strings.Contains(ip.String(), "%") {
+				return netip.Addr{}, errors.New("zone identifiers not allowed in DNS labels")
+			}
+			return ip, nil
+		}
+		return netip.Addr{}, fmt.Errorf("invalid IPv6 address: %s", ipStr)
+
+	default:
+		return netip.Addr{}, fmt.Errorf("unsupported query type: %d", qtype)
+	}
+}

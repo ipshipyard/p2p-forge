@@ -56,7 +56,7 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 
 		if q.Qtype != dns.TypeTXT && q.Qtype != dns.TypeANY {
 			containsNODATAResponse = true
-			dns01ResponseCount.WithLabelValues("NODATA-" + dnsToString(q.Qtype)).Add(1)
+			recordDNS01Response("NODATA-" + dnsToString(q.Qtype))
 			continue
 		}
 
@@ -74,7 +74,7 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 				Txt: []string{DNS01NotSetValue},
 			})
 			// track "empty" TXT separately from NODATA (we do return a record, but DNS-01 value is not set yet)
-			dns01ResponseCount.WithLabelValues("TXT-EMPTY").Add(1)
+			recordDNS01Response("TXT-EMPTY")
 			continue
 		}
 
@@ -87,7 +87,7 @@ func (p acmeReader) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 			},
 			Txt: []string{string(val)},
 		})
-		dns01ResponseCount.WithLabelValues("TXT").Add(1)
+		recordDNS01Response("TXT")
 	}
 
 	if len(answers) > 0 || containsNODATAResponse {

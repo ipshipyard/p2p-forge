@@ -11,14 +11,17 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
+	"testing"
 	"time"
 
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/coredns/coredns/plugin/pkg/reuseport"
 	"github.com/felixge/httpsnoop"
 	"github.com/ipshipyard/p2p-forge/client"
+	"github.com/ipshipyard/p2p-forge/denylist"
 	"github.com/prometheus/client_golang/prometheus"
 
 	metrics "github.com/slok/go-http-metrics/metrics/prometheus"
@@ -150,6 +153,13 @@ func (c *acmeWriter) OnStartup() error {
 				return
 			}
 
+			// Check denylist before attempting to connect
+			if blocked, reason := checkDenylist(clientIPs(r), typedBody.Addresses); blocked {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(fmt.Sprintf("403 Forbidden: %s", reason)))
+				return
+			}
+
 			httpUserAgent := r.Header.Get("User-Agent")
 			if err := testAddresses(r.Context(), peerID, typedBody.Addresses, httpUserAgent); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
@@ -175,10 +185,18 @@ func (c *acmeWriter) OnStartup() error {
 		}
 	}
 
+	// Use appropriate registry for HTTP metrics
+	var reg *prometheus.Registry
+	if testing.Testing() {
+		reg = prometheus.NewRegistry()
+	} else {
+		reg = prometheus.DefaultRegisterer.(*prometheus.Registry)
+	}
+
 	// middleware with prometheus recorder
 	httpMetricsMiddleware := middleware.New(middleware.Config{
 		Recorder: metrics.NewRecorder(metrics.Config{
-			Registry:        prometheus.DefaultRegisterer.(*prometheus.Registry),
+			Registry:        reg,
 			Prefix:          "coredns_forge_" + pluginName,
 			DurationBuckets: []float64{0.1, 0.5, 1, 2, 5, 8, 10, 20, 30}, // TODO: remove this comment if we are ok with these buckets
 		}),
@@ -219,7 +237,7 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string, httpUserAgent
 	agentVersion := agentType(httpUserAgent)
 	h, err := libp2p.New(libp2p.NoListenAddrs, libp2p.DisableRelay())
 	if err != nil {
-		peerProbeCount.WithLabelValues("error", agentVersion).Add(1)
+		recordPeerProbe("error", agentVersion)
 		return err
 	}
 	defer h.Close()
@@ -228,7 +246,7 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string, httpUserAgent
 	for _, addr := range addrs {
 		ma, err := multiaddr.NewMultiaddr(addr)
 		if err != nil {
-			peerProbeCount.WithLabelValues("error", agentVersion).Add(1)
+			recordPeerProbe("error", agentVersion)
 			return err
 		}
 		mas = append(mas, ma)
@@ -236,7 +254,7 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string, httpUserAgent
 
 	err = h.Connect(ctx, peer.AddrInfo{ID: p, Addrs: mas})
 	if err != nil {
-		peerProbeCount.WithLabelValues("error", agentVersion).Add(1)
+		recordPeerProbe("error", agentVersion)
 		return err
 	}
 
@@ -248,7 +266,7 @@ func testAddresses(ctx context.Context, p peer.ID, addrs []string, httpUserAgent
 		}
 	}
 	log.Debugf("connected to peer %s - UserAgent: %q", p, agentVersion)
-	peerProbeCount.WithLabelValues("ok", agentType(agentVersion)).Add(1)
+	recordPeerProbe("ok", agentType(agentVersion))
 	return nil
 }
 
@@ -286,6 +304,35 @@ type requestBody struct {
 	Addresses []string `json:"addresses"`
 }
 
+// checkDenylist checks client IPs and multiaddr IPs against denylist.
+// Returns (blocked, reason) where reason describes which IP was blocked.
+// Blocks if ANY IP is denied.
+func checkDenylist(clientIPs []netip.Addr, multiaddrs []string) (bool, string) {
+	mgr := denylist.GetManager()
+	if mgr == nil {
+		return false, ""
+	}
+
+	// Check all client IPs (XFF and RemoteAddr)
+	for _, client := range clientIPs {
+		if !client.IsValid() {
+			continue
+		}
+		if denied, result := mgr.Check(client); denied {
+			return true, fmt.Sprintf("client IP %s blocked by %s", client, result.Name)
+		}
+	}
+
+	// Check multiaddr IPs
+	for _, ip := range multiaddrsToIPs(multiaddrs) {
+		if denied, result := mgr.Check(ip); denied {
+			return true, fmt.Sprintf("multiaddr IP %s blocked by %s", ip, result.Name)
+		}
+	}
+
+	return false, ""
+}
+
 func (c *acmeWriter) OnFinalShutdown() error {
 	if !c.nlSetup {
 		return nil
@@ -295,6 +342,15 @@ func (c *acmeWriter) OnFinalShutdown() error {
 	if c.closeCertMgr != nil {
 		c.closeCertMgr()
 	}
+
+	// Close datastore to release file handles (critical on Windows).
+	// Shared with acmeReader but closed here to avoid double-close.
+	if c.Datastore != nil {
+		if err := c.Datastore.Close(); err != nil {
+			log.Warningf("failed to close datastore: %v", err)
+		}
+	}
+
 	c.nlSetup = false
 	return nil
 }

@@ -14,7 +14,9 @@ import (
 	_ "github.com/coredns/coredns/plugin/reload"
 	_ "github.com/coredns/coredns/plugin/root"
 
-	// Load p2p-forge plugins
+	// Load p2p-forge plugins (denylist must be first - provides Manager for others)
+	_ "github.com/ipshipyard/p2p-forge/denylist"
+
 	_ "github.com/ipshipyard/p2p-forge/acme"
 	_ "github.com/ipshipyard/p2p-forge/ipparser"
 )

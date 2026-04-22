@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,10 +15,24 @@ import (
 	"github.com/coredns/coredns/coremain"
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 
+	golog "github.com/ipfs/go-log/v2"
+	"github.com/libp2p/go-libp2p/gologshim"
+
 	"github.com/joho/godotenv"
 )
 
+func init() {
+	// Route stdlib slog and go-libp2p's gologshim through go-log so
+	// libp2p subsystem logs share formatting and level control
+	// (golog.SetLogLevel) with the rest of go-log output.
+	// Required since go-log v2.9 + go-libp2p v0.45; see
+	// https://github.com/ipfs/go-log/releases/tag/v2.9.0
+	slog.SetDefault(slog.New(golog.SlogHandler()))
+	gologshim.SetDefaultHandler(golog.SlogHandler())
+}
+
 var p2pForgeDirectives = []string{
+	"denylist", // must be first - provides Manager for ipparser and acme
 	"ipparser",
 	"acme",
 }
@@ -39,6 +54,35 @@ func init() {
 		}
 	}
 	clog.Debugf("updated directives: %v", dnsserver.Directives)
+}
+
+func main() {
+	fmt.Printf("%s %s\n", name, version) // always print version
+	registerVersionMetric()
+	err := godotenv.Load()
+	if err == nil {
+		fmt.Println(".env found and loaded")
+	}
+
+	// Check for common misconfiguration before running CoreDNS
+	if shouldShowUsageGuidance() {
+		fmt.Fprintf(os.Stderr, "\nError: Configuration issue detected.\n\n")
+		fmt.Fprintf(os.Stderr, "p2p-forge requires a Corefile with 'acme' and 'ipparser' plugins.\n")
+		fmt.Fprintf(os.Stderr, "This error occurs when running without a proper Corefile or with\n")
+		fmt.Fprintf(os.Stderr, "a generic CoreDNS config missing p2p-forge-specific plugins.\n\n")
+		fmt.Fprintf(os.Stderr, "For detailed usage instructions, see: https://github.com/ipshipyard/p2p-forge#usage\n\n")
+		fmt.Fprintf(os.Stderr, "Local development:\n")
+		fmt.Fprintf(os.Stderr, "  ./p2p-forge -conf Corefile.local-dev -dns.port 5354\n\n")
+		fmt.Fprintf(os.Stderr, "Local Docker development:\n")
+		fmt.Fprintf(os.Stderr, "  docker build -t p2p-forge-dev . && docker run --rm -it --net=host p2p-forge-dev\n")
+		fmt.Fprintf(os.Stderr, "  docker run --rm -it --net=host -v ./Corefile.local-dev:/p2p-forge/Corefile.local-dev p2p-forge-dev -conf /p2p-forge/Corefile.local-dev -dns.port 5354\n\n")
+		fmt.Fprintf(os.Stderr, "Production deployment:\n")
+		fmt.Fprintf(os.Stderr, "  ./p2p-forge -conf Corefile\n")
+		fmt.Fprintf(os.Stderr, "  (Note: Use production-appropriate Corefile, not Corefile.local-dev)\n\n")
+		os.Exit(1)
+	}
+
+	coremain.Run()
 }
 
 // shouldShowUsageGuidance detects when Corefile is missing p2p-forge plugins
@@ -115,35 +159,6 @@ func isMissingP2PForgePlugins(filename string) bool {
 
 	// Show guidance if missing either essential plugin
 	return !hasAcme || !hasIPParser
-}
-
-func main() {
-	fmt.Printf("%s %s\n", name, version) // always print version
-	registerVersionMetric()
-	err := godotenv.Load()
-	if err == nil {
-		fmt.Println(".env found and loaded")
-	}
-
-	// Check for common misconfiguration before running CoreDNS
-	if shouldShowUsageGuidance() {
-		fmt.Fprintf(os.Stderr, "\nError: Configuration issue detected.\n\n")
-		fmt.Fprintf(os.Stderr, "p2p-forge requires a Corefile with 'acme' and 'ipparser' plugins.\n")
-		fmt.Fprintf(os.Stderr, "This error occurs when running without a proper Corefile or with\n")
-		fmt.Fprintf(os.Stderr, "a generic CoreDNS config missing p2p-forge-specific plugins.\n\n")
-		fmt.Fprintf(os.Stderr, "For detailed usage instructions, see: https://github.com/ipshipyard/p2p-forge#usage\n\n")
-		fmt.Fprintf(os.Stderr, "Local development:\n")
-		fmt.Fprintf(os.Stderr, "  ./p2p-forge -conf Corefile.local-dev -dns.port 5354\n\n")
-		fmt.Fprintf(os.Stderr, "Local Docker development:\n")
-		fmt.Fprintf(os.Stderr, "  docker build -t p2p-forge-dev . && docker run --rm -it --net=host p2p-forge-dev\n")
-		fmt.Fprintf(os.Stderr, "  docker run --rm -it --net=host -v ./Corefile.local-dev:/p2p-forge/Corefile.local-dev p2p-forge-dev -conf /p2p-forge/Corefile.local-dev -dns.port 5354\n\n")
-		fmt.Fprintf(os.Stderr, "Production deployment:\n")
-		fmt.Fprintf(os.Stderr, "  ./p2p-forge -conf Corefile\n")
-		fmt.Fprintf(os.Stderr, "  (Note: Use production-appropriate Corefile, not Corefile.local-dev)\n\n")
-		os.Exit(1)
-	}
-
-	coremain.Run()
 }
 
 func registerVersionMetric() {

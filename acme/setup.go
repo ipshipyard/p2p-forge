@@ -151,6 +151,9 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 		}
 	}
 
+	// Initialize shared metrics for both reader and writer
+	initMetrics()
+
 	writer := &acmeWriter{
 		Addr:        httpListenAddr,
 		Domain:      forgeRegistrationDomain,
