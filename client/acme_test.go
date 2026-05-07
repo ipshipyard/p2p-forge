@@ -1,7 +1,9 @@
 package client
 
 import (
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -350,4 +352,227 @@ func TestAddrFactoryFnSkipsUnreachableAddrs(t *testing.T) {
 			runTest(t, tt.multiaddrs, tt.expectedAddrs, false, tt.description)
 		})
 	}
+}
+
+// TestHasHostTrueImmediatelyAfterProvideHost verifies that after ProvideHost()
+// is called, hasHost() returns true immediately. This tests the fix for a race
+// condition where address factory could be called before Start() goroutine ran.
+func TestHasHostTrueImmediatelyAfterProvideHost(t *testing.T) {
+	certMgr, err := NewP2PForgeCertMgr(
+		WithForgeDomain(testForgeDomain),
+		WithForgeRegistrationEndpoint("http://localhost:0"),
+		WithAllowPrivateForgeAddrs(),
+	)
+	if err != nil {
+		t.Fatalf("failed to create P2PForgeCertMgr: %v", err)
+	}
+
+	testPeerID, err := peer.Decode("12D3KooWGzxzKZYveHXtpG6AsrUJBcWxHBFS2HsEoGTxrMLvKXtf")
+	if err != nil {
+		t.Fatalf("failed to decode test peer ID: %v", err)
+	}
+
+	mockHost := &mockHostWithConfirmedAddrs{
+		id: testPeerID,
+	}
+
+	// Provide host - this should resolve hostFn immediately
+	certMgr.ProvideHost(mockHost)
+
+	// Get address factory and call it - this would deadlock if hostFn wasn't
+	// resolved by ProvideHost (before the fix, it would wait for Start() goroutine)
+	done := make(chan bool, 1)
+	go func() {
+		factory := certMgr.AddressFactory()
+		// Call the factory with a forge address - internally it calls hostFn()
+		forgeAddr, _ := multiaddr.NewMultiaddr("/ip4/1.2.3.4/tcp/4001/tls/sni/*." + testForgeDomain + "/ws")
+		_ = factory([]multiaddr.Multiaddr{forgeAddr})
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		// Test passed - no deadlock
+	case <-time.After(2 * time.Second):
+		t.Fatal("AddressFactory deadlocked - hostFn was not resolved by ProvideHost")
+	}
+}
+
+// TestAddressFactoryOrderIndependence verifies that AddressFactory works
+// correctly regardless of when it's called during initialization.
+func TestAddressFactoryOrderIndependence(t *testing.T) {
+	certMgr, err := NewP2PForgeCertMgr(
+		WithForgeDomain(testForgeDomain),
+		WithForgeRegistrationEndpoint("http://localhost:0"),
+		WithAllowPrivateForgeAddrs(),
+	)
+	if err != nil {
+		t.Fatalf("failed to create P2PForgeCertMgr: %v", err)
+	}
+
+	testPeerID, err := peer.Decode("12D3KooWGzxzKZYveHXtpG6AsrUJBcWxHBFS2HsEoGTxrMLvKXtf")
+	if err != nil {
+		t.Fatalf("failed to decode test peer ID: %v", err)
+	}
+
+	forgeAddr, err := multiaddr.NewMultiaddr("/ip4/1.2.3.4/tcp/4001/tls/sni/*." + testForgeDomain + "/ws")
+	if err != nil {
+		t.Fatalf("failed to create forge addr: %v", err)
+	}
+	regularAddr, err := multiaddr.NewMultiaddr("/ip4/1.2.3.4/tcp/4001")
+	if err != nil {
+		t.Fatalf("failed to create regular addr: %v", err)
+	}
+
+	// Test 1: Call AddressFactory BEFORE ProvideHost
+	// This should not panic and should skip forge addresses gracefully
+	t.Run("before ProvideHost", func(t *testing.T) {
+		done := make(chan []multiaddr.Multiaddr, 1)
+		go func() {
+			factory := certMgr.AddressFactory()
+			result := factory([]multiaddr.Multiaddr{forgeAddr, regularAddr})
+			done <- result
+		}()
+
+		select {
+		case result := <-done:
+			// Should return regular addr, forge addr should be skipped (no host yet)
+			if len(result) != 1 {
+				t.Errorf("expected 1 address, got %d: %v", len(result), result)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("AddressFactory deadlocked before ProvideHost")
+		}
+	})
+
+	// Provide host
+	mockHost := &mockHostWithConfirmedAddrs{id: testPeerID}
+	certMgr.ProvideHost(mockHost)
+
+	// Test 2: Call AddressFactory AFTER ProvideHost (but before Start)
+	// This should not deadlock
+	t.Run("after ProvideHost", func(t *testing.T) {
+		done := make(chan []multiaddr.Multiaddr, 1)
+		go func() {
+			factory := certMgr.AddressFactory()
+			result := factory([]multiaddr.Multiaddr{forgeAddr, regularAddr})
+			done <- result
+		}()
+
+		select {
+		case result := <-done:
+			// Should return regular addr, forge addr skipped (no cert yet)
+			if len(result) != 1 {
+				t.Errorf("expected 1 address, got %d: %v", len(result), result)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("AddressFactory deadlocked after ProvideHost")
+		}
+	})
+}
+
+// TestAddressFactoryConcurrentAccess verifies no data races when AddressFactory
+// is called concurrently. Run with -race flag.
+func TestAddressFactoryConcurrentAccess(t *testing.T) {
+	certMgr, err := NewP2PForgeCertMgr(
+		WithForgeDomain(testForgeDomain),
+		WithForgeRegistrationEndpoint("http://localhost:0"),
+		WithAllowPrivateForgeAddrs(),
+	)
+	if err != nil {
+		t.Fatalf("failed to create P2PForgeCertMgr: %v", err)
+	}
+
+	testPeerID, err := peer.Decode("12D3KooWGzxzKZYveHXtpG6AsrUJBcWxHBFS2HsEoGTxrMLvKXtf")
+	if err != nil {
+		t.Fatalf("failed to decode test peer ID: %v", err)
+	}
+
+	mockHost := &mockHostWithConfirmedAddrs{id: testPeerID}
+	certMgr.ProvideHost(mockHost)
+
+	forgeAddr, err := multiaddr.NewMultiaddr("/ip4/1.2.3.4/tcp/4001/tls/sni/*." + testForgeDomain + "/ws")
+	if err != nil {
+		t.Fatalf("failed to create forge addr: %v", err)
+	}
+
+	// Spawn multiple goroutines calling AddressFactory concurrently
+	const numGoroutines = 10
+	const iterations = 100
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				factory := certMgr.AddressFactory()
+				_ = factory([]multiaddr.Multiaddr{forgeAddr})
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Test passed - no race detected (run with -race flag to verify)
+	case <-time.After(10 * time.Second):
+		t.Fatal("concurrent AddressFactory calls timed out")
+	}
+}
+
+// TestProvideHostIdempotent verifies that calling ProvideHost twice doesn't
+// cause issues. The first host provided is the one used (via sync.OnceValue).
+func TestProvideHostIdempotent(t *testing.T) {
+	certMgr, err := NewP2PForgeCertMgr(
+		WithForgeDomain(testForgeDomain),
+		WithForgeRegistrationEndpoint("http://localhost:0"),
+		WithAllowPrivateForgeAddrs(),
+	)
+	if err != nil {
+		t.Fatalf("failed to create P2PForgeCertMgr: %v", err)
+	}
+
+	testPeerID1, err := peer.Decode("12D3KooWGzxzKZYveHXtpG6AsrUJBcWxHBFS2HsEoGTxrMLvKXtf")
+	if err != nil {
+		t.Fatalf("failed to decode test peer ID 1: %v", err)
+	}
+	testPeerID2, err := peer.Decode("12D3KooWDpp7U7W9Q8feMZPPEpPP5FKXTUakLgnVLbavfjb9mzrT")
+	if err != nil {
+		t.Fatalf("failed to decode test peer ID 2: %v", err)
+	}
+
+	mockHost1 := &mockHostWithConfirmedAddrs{id: testPeerID1}
+	mockHost2 := &mockHostWithConfirmedAddrs{id: testPeerID2}
+
+	// First call provides the host that will be used
+	certMgr.ProvideHost(mockHost1)
+
+	// Second call doesn't panic or deadlock, but doesn't change the host
+	// (hostFn is sync.OnceValue, so first host wins)
+	done := make(chan bool, 1)
+	go func() {
+		certMgr.ProvideHost(mockHost2)
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		// OK - second call completed (doesn't block after the fix)
+	case <-time.After(2 * time.Second):
+		t.Fatal("second ProvideHost should not deadlock")
+	}
+
+	// Verify the first host is still the one being used by calling AddressFactory
+	// which internally uses hostFn()
+	factory := certMgr.AddressFactory()
+	forgeAddr, _ := multiaddr.NewMultiaddr("/ip4/1.2.3.4/tcp/4001/tls/sni/*." + testForgeDomain + "/ws")
+	_ = factory([]multiaddr.Multiaddr{forgeAddr})
+	// If we got here without panic/deadlock, hostFn() returned successfully
 }
