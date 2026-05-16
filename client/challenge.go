@@ -17,7 +17,19 @@ import (
 // SendChallenge submits value for DNS-01 challenge to the p2p-forge HTTP server for the given peerID.
 // It requires the corresponding private key and a list of multiaddresses that the peerID is listening on using
 // publicly reachable IP addresses.
+//
+// SendChallenge uses http.DefaultClient; callers that need a custom Transport
+// (e.g. to override resolution, rewrite the dial address, or trust an
+// alternate CA for the registration endpoint itself) should use
+// SendChallengeWithClient.
 func SendChallenge(ctx context.Context, baseURL string, privKey crypto.PrivKey, challenge string, addrs []multiaddr.Multiaddr, forgeAuth string, userAgent string, modifyForgeRequest func(r *http.Request) error) error {
+	return SendChallengeWithClient(ctx, baseURL, privKey, challenge, addrs, forgeAuth, userAgent, modifyForgeRequest, nil)
+}
+
+// SendChallengeWithClient is SendChallenge with a caller-supplied *http.Client.
+// If httpClient is nil, http.DefaultClient is used. PeerID auth is layered on
+// top via httppeeridauth.ClientPeerIDAuth.
+func SendChallengeWithClient(ctx context.Context, baseURL string, privKey crypto.PrivKey, challenge string, addrs []multiaddr.Multiaddr, forgeAuth string, userAgent string, modifyForgeRequest func(r *http.Request) error, httpClient *http.Client) error {
 	// Create request
 	registrationURL := fmt.Sprintf("%s/v1/_acme-challenge", baseURL)
 	req, err := ChallengeRequest(ctx, registrationURL, challenge, addrs)
@@ -39,9 +51,12 @@ func SendChallenge(ctx context.Context, baseURL string, privKey crypto.PrivKey, 
 		}
 	}
 
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 	// Execute request wrapped in ClientPeerIDAuth
-	client := &httppeeridauth.ClientPeerIDAuth{PrivKey: privKey}
-	_, resp, err := client.AuthenticatedDo(http.DefaultClient, req)
+	authClient := &httppeeridauth.ClientPeerIDAuth{PrivKey: privKey}
+	_, resp, err := authClient.AuthenticatedDo(httpClient, req)
 	if err != nil {
 		return fmt.Errorf("libp2p HTTP ClientPeerIDAuth error at %s: %w", registrationURL, err)
 	}
