@@ -173,11 +173,11 @@ func WithUserAgent(userAgent string) P2PForgeCertMgrOptions {
 // WithHTTPClient sets the *http.Client used when talking to the forge
 // registration endpoint. The default is http.DefaultClient.
 //
-// This is the lowest-level seam: callers can swap in a client with a custom
-// Transport (custom resolver, rewritten dial address, alternate root CAs for
-// the registration endpoint itself, etc.). Useful for test harnesses that run
-// an in-process forge on a loopback address while the PeerID-auth signature
-// must still be scoped to the production registration hostname.
+// Callers can supply a client with a custom Transport (custom resolver,
+// rewritten dial address, alternate root CAs for the registration endpoint
+// itself, etc.). Useful for test harnesses that run an in-process forge on a
+// loopback address while the PeerID-auth signature must still be scoped to
+// the production registration hostname.
 //
 // The client's Timeout, Transport, CheckRedirect, and Jar are honored as-is;
 // PeerID auth is layered on top via httppeeridauth.ClientPeerIDAuth.
@@ -716,7 +716,11 @@ func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challe
 	d.log.Debugw("advertised libp2p addrs for p2p-forge broker to try", "addrs", advertisedAddrs)
 
 	d.log.Debugw("asking p2p-forge broker to set DNS-01 TXT record", "url", d.forgeRegistrationEndpoint, "dns01_value", dns01value)
-	err := SendChallengeWithClient(ctx,
+	var sendOpts []SendChallengeOption
+	if d.httpClient != nil {
+		sendOpts = append(sendOpts, WithChallengeHTTPClient(d.httpClient))
+	}
+	err := SendChallenge(ctx,
 		d.forgeRegistrationEndpoint,
 		h.Peerstore().PrivKey(h.ID()),
 		dns01value,
@@ -724,7 +728,7 @@ func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challe
 		d.forgeAuth,
 		d.userAgent,
 		d.modifyForgeRequest,
-		d.httpClient,
+		sendOpts...,
 	)
 	if err != nil {
 		return fmt.Errorf("p2p-forge broker registration error: %w", err)

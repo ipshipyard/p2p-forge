@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [v0.8.1] - 2026-05-16
 
 ### Added
-- ✨ `client.WithHTTPClient(*http.Client)` option on `P2PForgeCertMgr` and a matching `client.SendChallengeWithClient` exported function. Lets callers supply a custom `*http.Client` (with a custom `Transport`, resolver, or root CAs) for the DNS-01 challenge POST to the forge registration endpoint. Useful for test harnesses that run an in-process forge on a loopback address while the PeerID-auth signature must stay scoped to the production registration hostname. The existing `client.SendChallenge` signature is preserved and now forwards to `SendChallengeWithClient` with `http.DefaultClient`, so existing callers are unaffected. ([#87](https://github.com/ipshipyard/p2p-forge/pull/87))
+- ✨ `client.WithHTTPClient(*http.Client)` option on `P2PForgeCertMgr` and a matching `client.WithChallengeHTTPClient(*http.Client)` option for `client.SendChallenge`. Lets callers supply a custom `*http.Client` (with a custom `Transport`, resolver, or root CAs) for the DNS-01 challenge POST to the forge registration endpoint. Useful for test harnesses that run an in-process forge on a loopback address while the PeerID-auth signature must stay scoped to the production registration hostname. `client.SendChallenge` gains a trailing variadic `opts ...SendChallengeOption` parameter; existing positional-only callers compile unchanged. ([#87](https://github.com/ipshipyard/p2p-forge/pull/87))
 
 ## [v0.8.0] - 2026-04-14
 
