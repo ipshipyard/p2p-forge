@@ -15,8 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 ### Changed
+- Bumped direct dependencies. `certmagic` v0.21.6 → v0.25.3 hardens OCSP delegated-responder validation, and `coredns` v1.14.2 → v1.14.3 builds against Go 1.26.2 to sweep in stdlib CVE fixes. `fsnotify` v1.9.0 → v1.10.1 fixes the inotify sibling-path watch removal that affected the `denylist` plugin. Also bumped `acmez/v3` v3.0.0 → v3.1.6, `pebble/v2` v2.7.0 → v2.10.1, `bart` v0.26.0 → v0.27.1, `go-datastore` v0.8.2 → v0.9.1, `go-multiaddr` v0.16.0 → v0.16.1, `go-multiaddr-dns` v0.4.1 → v0.5.0, `go-multibase` v0.2.0 → v0.3.0, and `slok/go-http-metrics` v0.12.0 → v0.13.0, plus patch bumps for `go-log/v2`, `prometheus/client_golang`, and `zap`. The pebble bump required passing `keyAlg="rsa"` to `pebbleCA.New`, `caaIdentities=nil` to `pebbleWFE.New`, and pointing pebble VA's DNS queries at CoreDNS's TCP listener, since pebble v2.10 forces TCP for ACME DNS lookups.
+- 🛠 Migrated the `acme` plugin's optional DynamoDB datastore from `aws-sdk-go` to `aws-sdk-go-v2`, built via `dynamodb.NewFromConfig(config.LoadDefaultConfig(...))`. Operators using `database-type dynamo` should confirm their AWS credentials chain still resolves under v2 (env vars, shared config, IAM role); the `AWS_REGION`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` env vars still apply. Pinned to the head of [ipfs/go-ds-dynamodb#22](https://github.com/ipfs/go-ds-dynamodb/pull/22) pending the v0.3.0 release.
 
 ### Fixed
+- `denylist` plugin leaked the previous instance's feed tickers and fsnotify watcher on every Caddy reload. Cleanup now runs on `OnShutdown` instead of `OnFinalShutdown`, so reloads release these resources.
 
 ## [v0.8.1] - 2026-05-16
 
