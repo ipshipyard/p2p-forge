@@ -1,6 +1,7 @@
 package acme
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -10,10 +11,8 @@ import (
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
 
-	// TODO: migrate to aws-sdk-go-v2; aws-sdk-go (v1) is end-of-support as of
-	// v1.55.8 and depends on go-ds-dynamodb adding a v2-compatible constructor.
-	"github.com/aws/aws-sdk-go/aws/session"
-	ddbv1 "github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
 	"github.com/ipfs/go-datastore"
 	badger4 "github.com/ipfs/go-ds-badger4"
@@ -132,8 +131,14 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 						}
 					}
 
-					ddbClient := ddbv1.New(session.Must(session.NewSession()))
-					ds = ddbds.New(ddbClient, args[0])
+					ctx, cancel := context.WithCancel(context.Background())
+					c.OnShutdown(func() error { cancel(); return nil })
+					cfg, err := config.LoadDefaultConfig(ctx)
+					if err != nil {
+						cancel()
+						return nil, nil, fmt.Errorf("database-type dynamo: loading AWS config: %w", err)
+					}
+					ds = ddbds.New(dynamodb.NewFromConfig(cfg), args[0])
 				case "badger":
 					if len(args) != 1 {
 						return nil, nil, fmt.Errorf("database-type badger: need to pass a path for the Badger configuration")
