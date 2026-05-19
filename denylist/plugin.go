@@ -39,16 +39,19 @@ func setup(c *caddy.Controller) error {
 		sharedManagerMu.Unlock()
 		initMetrics()
 
-		c.OnFinalShutdown(func() error {
+		// Run on every server stop, including reloads. Capture mgr in the
+		// closure so the cleanup acts on this instance's manager regardless
+		// of whether sharedManager has been overwritten by a successor
+		// instance's setup (Caddy runs new-instance setup before old-instance
+		// OnShutdown during a graceful reload).
+		c.OnShutdown(func() error {
+			err := mgr.close()
 			sharedManagerMu.Lock()
-			m := sharedManager
-			sharedManagerMu.Unlock()
-			if m != nil {
-				err := m.close()
-				ResetManager()
-				return err
+			if sharedManager == mgr {
+				sharedManager = nil
 			}
-			return nil
+			sharedManagerMu.Unlock()
+			return err
 		})
 	}
 

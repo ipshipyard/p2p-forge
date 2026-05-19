@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 🛠 Migrated the `acme` plugin's optional DynamoDB datastore from `aws-sdk-go` (v1, end-of-support as of v1.55.8) to `aws-sdk-go-v2`. The client is now built with `dynamodb.NewFromConfig(config.LoadDefaultConfig(...))` instead of the v1 session API. Operators configuring `database-type dynamo` should make sure their AWS credentials chain still resolves under v2 (env vars, shared config, IAM role, etc.; the same `AWS_REGION` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` env vars are still honored). Depends on [ipfs/go-ds-dynamodb#22](https://github.com/ipfs/go-ds-dynamodb/pull/22); pinned to that PR's head pending the v0.3.0 release.
 
 ### Fixed
+- `denylist` plugin's per-feed HTTP refresh goroutines and fsnotify file watcher are now released on every server stop, not only on final process shutdown. Previously, Caddy reloads (SIGUSR1 or the `reload` plugin) ran new-instance setup before old-instance shutdown and the old cleanup hook was registered on `OnFinalShutdown`, which Caddy does not fire during a reload. As a result, each reload leaked the previous instance's feed tickers and watcher. Cleanup now happens on `OnShutdown` with the manager captured in the closure.
 
 ## [v0.8.1] - 2026-05-16
 
