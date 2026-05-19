@@ -10,6 +10,8 @@ import (
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
 
+	// TODO: migrate to aws-sdk-go-v2; aws-sdk-go (v1) is end-of-support as of
+	// v1.55.8 and depends on go-ds-dynamodb adding a v2-compatible constructor.
 	"github.com/aws/aws-sdk-go/aws/session"
 	ddbv1 "github.com/aws/aws-sdk-go/service/dynamodb"
 

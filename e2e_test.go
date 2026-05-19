@@ -62,10 +62,30 @@ const authForgeHeader = client.ForgeAuthHeader
 
 // TestInfrastructure provides isolated test environment for each test
 type TestInfrastructure struct {
-	DNSServerAddress string
-	HTTPPort         int
-	TmpDir           string
-	Instance         *caddy.Instance
+	DNSServerUDPAddress string
+	DNSServerTCPAddress string
+	HTTPPort            int
+	TmpDir              string
+	Instance            *caddy.Instance
+}
+
+// dnsServerAddresses returns the UDP and TCP listener addresses from a CoreDNS
+// ServerListener. The caddy API exposes the packet conn via LocalAddr() and the
+// stream listener via Addr(); the default CoreDNS DNS server type binds these
+// to UDP and TCP respectively, which is asserted here so an unexpected server
+// type (DoH/DoT/DoQ/gRPC) fails the test instead of silently feeding the wrong
+// address to consumers like pebble's VA (which uses TCP for DNS lookups).
+func dnsServerAddresses(t *testing.T, srv caddy.ServerListener) (udpAddr, tcpAddr string) {
+	t.Helper()
+	pkt := srv.LocalAddr()
+	if pkt == nil || pkt.Network() != "udp" {
+		t.Fatalf("expected UDP packet conn on CoreDNS server, got %v", pkt)
+	}
+	l := srv.Addr()
+	if l == nil || l.Network() != "tcp" {
+		t.Fatalf("expected TCP listener on CoreDNS server, got %v", l)
+	}
+	return pkt.String(), l.String()
 }
 
 // initDirectives sets up CoreDNS directives once during package initialization
@@ -110,11 +130,13 @@ func NewTestInfrastructure(t *testing.T) *TestInfrastructure {
 		t.Fatalf("Failed to start CoreDNS instance: %v", err)
 	}
 
+	udpAddr, tcpAddr := dnsServerAddresses(t, instance.Servers()[0])
 	testInfra := &TestInfrastructure{
-		DNSServerAddress: instance.Servers()[0].LocalAddr().String(),
-		HTTPPort:         httpPort,
-		TmpDir:           tmpDir,
-		Instance:         instance,
+		DNSServerUDPAddress: udpAddr,
+		DNSServerTCPAddress: tcpAddr,
+		HTTPPort:            httpPort,
+		TmpDir:              tmpDir,
+		Instance:            instance,
 	}
 
 	t.Cleanup(func() {
@@ -166,7 +188,7 @@ func TestRFC8020(t *testing.T) {
 	m.Question = make([]dns.Question, 1)
 	m.Question[0] = dns.Question{Qclass: dns.ClassINET, Name: fmt.Sprintf("%s.%s.", peerIDb36, forge), Qtype: dns.TypeTXT}
 
-	r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+	r, err := dns.Exchange(m, testInfra.DNSServerUDPAddress)
 	if err != nil {
 		t.Fatalf("Could not send message: %s", err)
 	}
@@ -232,7 +254,7 @@ func TestIPSubdomainsNonExistentRecords(t *testing.T) {
 			m.Question = make([]dns.Question, 1)
 			m.Question[0] = dns.Question{Qclass: dns.ClassINET, Name: domain, Qtype: tt.qtype}
 
-			r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+			r, err := dns.Exchange(m, testInfra.DNSServerUDPAddress)
 			if err != nil {
 				t.Fatalf("Could not send message: %s", err)
 			}
@@ -282,7 +304,7 @@ func TestSetACMEChallenge(t *testing.T) {
 	m.Question = make([]dns.Question, 1)
 	m.Question[0] = dns.Question{Qclass: dns.ClassINET, Name: fmt.Sprintf("_acme-challenge.%s.%s.", peerIDb36, forge), Qtype: dns.TypeTXT}
 
-	r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+	r, err := dns.Exchange(m, testInfra.DNSServerUDPAddress)
 	if err != nil {
 		t.Fatalf("Could not send message: %s", err)
 	}
@@ -322,7 +344,7 @@ func TestACMEChallengeNoDNS01Value(t *testing.T) {
 	m.Question = make([]dns.Question, 1)
 	m.Question[0] = dns.Question{Qclass: dns.ClassINET, Name: fmt.Sprintf("_acme-challenge.%s.%s.", peerIDb36, forge), Qtype: dns.TypeTXT}
 
-	r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+	r, err := dns.Exchange(m, testInfra.DNSServerUDPAddress)
 	if err != nil {
 		t.Fatalf("Could not send message: %s", err)
 	}
@@ -411,7 +433,7 @@ func TestIPv4Lookup(t *testing.T) {
 			m.Question = make([]dns.Question, 1)
 			m.Question[0] = dns.Question{Qclass: dns.ClassINET, Name: fmt.Sprintf("%s.%s.%s.", tt.subdomain, peerIDb36, forge), Qtype: tt.qtype}
 
-			r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+			r, err := dns.Exchange(m, testInfra.DNSServerUDPAddress)
 			if err != nil {
 				t.Fatalf("Could not send message: %s", err)
 			}
@@ -539,7 +561,7 @@ func TestIPv6Lookup(t *testing.T) {
 			m.Question = make([]dns.Question, 1)
 			m.Question[0] = dns.Question{Qclass: dns.ClassINET, Name: fmt.Sprintf("%s.%s.%s.", tt.subdomain, peerIDb36, forge), Qtype: tt.qtype}
 
-			r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+			r, err := dns.Exchange(m, testInfra.DNSServerUDPAddress)
 			if err != nil {
 				t.Fatalf("Could not send message: %s", err)
 			}
@@ -642,10 +664,10 @@ func TestLibp2pACMEE2E(t *testing.T) {
 			db := pebbleDB.NewMemoryStore()
 			logger := log.New(os.Stdout, "", 0)
 			caProfiles := map[string]pebbleCA.Profile{"default": {Description: "The test profile for " + tt.name, ValidityPeriod: tt.caCertValidityPeriod}}
-			ca := pebbleCA.New(logger, db, "", 0, 1, caProfiles)
-			va := pebbleVA.New(logger, 0, 0, false, testInfra.DNSServerAddress, db)
+			ca := pebbleCA.New(logger, db, "", "rsa", 0, 1, caProfiles)
+			va := pebbleVA.New(logger, 0, 0, false, testInfra.DNSServerTCPAddress, db)
 
-			wfeImpl := pebbleWFE.New(logger, db, va, ca, false, false, 3, 5)
+			wfeImpl := pebbleWFE.New(logger, db, va, ca, nil, false, false, 3, 5)
 			muxHandler := wfeImpl.Handler()
 
 			acmeHTTPListener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -688,8 +710,8 @@ func TestLibp2pACMEE2E(t *testing.T) {
 					d := net.Dialer{
 						Timeout: time.Second * 1,
 					}
-					log.Printf("p2p-forge/client DNS query to p2p-forge at %s (instead of %s)\n", testInfra.DNSServerAddress, address)
-					return d.DialContext(ctx, network, testInfra.DNSServerAddress)
+					log.Printf("p2p-forge/client DNS query to p2p-forge at %s (instead of %s)\n", testInfra.DNSServerUDPAddress, address)
+					return d.DialContext(ctx, network, testInfra.DNSServerUDPAddress)
 				},
 			}
 
@@ -1043,11 +1065,13 @@ func NewTestInfrastructureWithDenylist(t *testing.T, cfg DenylistTestConfig) *Te
 		t.Fatalf("Failed to start CoreDNS instance: %v", err)
 	}
 
+	udpAddr, tcpAddr := dnsServerAddresses(t, instance.Servers()[0])
 	testInfra := &TestInfrastructure{
-		DNSServerAddress: instance.Servers()[0].LocalAddr().String(),
-		HTTPPort:         httpPort,
-		TmpDir:           tmpDir,
-		Instance:         instance,
+		DNSServerUDPAddress: udpAddr,
+		DNSServerTCPAddress: tcpAddr,
+		HTTPPort:            httpPort,
+		TmpDir:              tmpDir,
+		Instance:            instance,
 	}
 
 	t.Cleanup(func() {
@@ -1094,7 +1118,7 @@ func TestDenylistE2E(t *testing.T) {
 			Qtype:  dns.TypeA,
 		}}}
 
-		r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+		r, err := dns.Exchange(m, testInfra.DNSServerUDPAddress)
 		if err != nil {
 			t.Fatalf("Could not send message: %s", err)
 		}
@@ -1121,7 +1145,7 @@ func TestDenylistE2E(t *testing.T) {
 			Qtype:  dns.TypeA,
 		}}}
 
-		r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+		r, err := dns.Exchange(m, testInfra.DNSServerUDPAddress)
 		if err != nil {
 			t.Fatalf("Could not send message: %s", err)
 		}
@@ -1145,7 +1169,7 @@ func TestDenylistE2E(t *testing.T) {
 			Qtype:  dns.TypeA,
 		}}}
 
-		r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+		r, err := dns.Exchange(m, testInfra.DNSServerUDPAddress)
 		if err != nil {
 			t.Fatalf("Could not send message: %s", err)
 		}
@@ -1170,7 +1194,7 @@ func TestDenylistE2E(t *testing.T) {
 			Qtype:  dns.TypeA,
 		}}}
 
-		r, err := dns.Exchange(m, testInfra.DNSServerAddress)
+		r, err := dns.Exchange(m, testInfra.DNSServerUDPAddress)
 		if err != nil {
 			t.Fatalf("Could not send message: %s", err)
 		}
@@ -1191,7 +1215,7 @@ func TestDenylistE2E(t *testing.T) {
 			Qtype:  dns.TypeA,
 		}}}
 
-		r2, err := dns.Exchange(m2, testInfra.DNSServerAddress)
+		r2, err := dns.Exchange(m2, testInfra.DNSServerUDPAddress)
 		if err != nil {
 			t.Fatalf("Could not send message: %s", err)
 		}

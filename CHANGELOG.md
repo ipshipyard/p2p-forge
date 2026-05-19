@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 ### Changed
+- Bumped direct dependencies: `certmagic` v0.21.6 → v0.25.3 (OCSP delegated-responder validation hardening), `coredns` v1.14.2 → v1.14.3 (built against Go 1.26.2, sweeping in stdlib CVE fixes), `acmez/v3` v3.0.0 → v3.1.6, `pebble/v2` v2.7.0 → v2.10.1, `fsnotify` v1.9.0 → v1.10.1 (fixes inotify sibling-path watch removal that affected the `denylist` plugin), `bart` v0.26.0 → v0.27.1, `go-datastore` v0.8.2 → v0.9.1, `go-multiaddr` v0.16.0 → v0.16.1, `go-multiaddr-dns` v0.4.1 → v0.5.0, `go-multibase` v0.2.0 → v0.3.0, `slok/go-http-metrics` v0.12.0 → v0.13.0, plus patch bumps for `aws-sdk-go`, `go-log/v2`, `prometheus/client_golang`, and `zap`. The pebble update required passing `keyAlg="rsa"` to `pebbleCA.New`, `caaIdentities=nil` to `pebbleWFE.New`, and routing pebble VA's DNS queries to CoreDNS's TCP listener (pebble v2.10 forces TCP for ACME DNS lookups). Marked `aws-sdk-go` (v1) for migration to `aws-sdk-go-v2` once `go-ds-dynamodb` exposes a v2 constructor.
 
 ### Fixed
 
