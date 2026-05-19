@@ -70,11 +70,8 @@ type TestInfrastructure struct {
 }
 
 // dnsServerAddresses returns the UDP and TCP listener addresses from a CoreDNS
-// ServerListener. The caddy API exposes the packet conn via LocalAddr() and the
-// stream listener via Addr(); the default CoreDNS DNS server type binds these
-// to UDP and TCP respectively, which is asserted here so an unexpected server
-// type (DoH/DoT/DoQ/gRPC) fails the test instead of silently feeding the wrong
-// address to consumers like pebble's VA (which uses TCP for DNS lookups).
+// ServerListener, asserting the default DNS server type binds `LocalAddr()` to
+// UDP and `Addr()` to TCP so a swap to DoH/DoT/DoQ/gRPC fails the test loudly.
 func dnsServerAddresses(t *testing.T, srv caddy.ServerListener) (udpAddr, tcpAddr string) {
 	t.Helper()
 	pkt := srv.LocalAddr()
