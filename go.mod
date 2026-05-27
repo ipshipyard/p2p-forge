@@ -11,7 +11,7 @@ require (
 	github.com/coredns/coredns v1.14.3
 	github.com/felixge/httpsnoop v1.0.4
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/gaissmai/bart v0.27.1
+	github.com/gaissmai/bart v0.28.0
 	github.com/ipfs/go-datastore v0.9.1
 	github.com/ipfs/go-ds-badger4 v0.1.8
 	github.com/ipfs/go-ds-dynamodb v0.3.0
