@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 ### Changed
+
+### Fixed
+
+## [v0.9.0] - 2026-05-27
+
+### Changed
 - Bumped direct dependencies. `certmagic` v0.21.6 → v0.25.3 hardens OCSP delegated-responder validation, and `coredns` v1.14.2 → v1.14.3 builds against Go 1.26.2 to sweep in stdlib CVE fixes. `fsnotify` v1.9.0 → v1.10.1 fixes the inotify sibling-path watch removal that affected the `denylist` plugin. Also bumped `acmez/v3` v3.0.0 → v3.1.6, `pebble/v2` v2.7.0 → v2.10.1, `bart` v0.26.0 → v0.28.0, `go-datastore` v0.8.2 → v0.9.1, `go-multiaddr` v0.16.0 → v0.16.1, `go-multiaddr-dns` v0.4.1 → v0.5.0, `go-multibase` v0.2.0 → v0.3.0, and `slok/go-http-metrics` v0.12.0 → v0.13.0, plus patch bumps for `go-log/v2`, `prometheus/client_golang`, and `zap`. The pebble bump required passing `keyAlg="rsa"` to `pebbleCA.New`, `caaIdentities=nil` to `pebbleWFE.New`, and pointing pebble VA's DNS queries at CoreDNS's TCP listener, since pebble v2.10 forces TCP for ACME DNS lookups.
 - 🛠 Bumped the optional DynamoDB datastore (`database-type dynamo`) to `go-ds-dynamodb` v0.3.0. The release switches to the current AWS SDK for Go and fixes several crashes and deadlocks. Operators should confirm their AWS credentials still work; `AWS_REGION`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` still apply. See the [go-ds-dynamodb v0.3.0 release notes](https://github.com/ipfs/go-ds-dynamodb/releases/tag/v0.3.0) for details.
 
