@@ -153,8 +153,8 @@ github.com/ipfs/go-detect-race v0.0.1 h1:qX/xay2W3E4Q1U7d9lNs1sU9nvguX0a7319XbyQ
 github.com/ipfs/go-detect-race v0.0.1/go.mod h1:8BNT7shDZPo99Q74BpGMK+4D8Mn4j46UU0LZ723meps=
 github.com/ipfs/go-ds-badger4 v0.1.8 h1:frNczf5CjCVm62RJ5mW5tD/oLQY/9IKAUpKviRV9QAI=
 github.com/ipfs/go-ds-badger4 v0.1.8/go.mod h1:FdqSLA5TMsyqooENB/Hf4xzYE/iH0z/ErLD6ogtfMrA=
-github.com/ipfs/go-ds-dynamodb v0.2.3-0.20260519155841-d2b45289e5fd h1:3BoNUbyVX0epaCIKbR+oNq35/sWdGM6G1OsefhrG+MU=
-github.com/ipfs/go-ds-dynamodb v0.2.3-0.20260519155841-d2b45289e5fd/go.mod h1:Y+0KOICCda/1Nme0eV2T24pPvcNhhKYGgk67PPMAvJ8=
+github.com/ipfs/go-ds-dynamodb v0.2.3-0.20260527134720-5875687bc3f0 h1:iPaV0VdaCO8A3vVGB157OrlWh1hgeNK0hV907xfyZHY=
+github.com/ipfs/go-ds-dynamodb v0.2.3-0.20260527134720-5875687bc3f0/go.mod h1:Y+0KOICCda/1Nme0eV2T24pPvcNhhKYGgk67PPMAvJ8=
 github.com/ipfs/go-log/v2 v2.9.2 h1:O/5BB0elpkRILvT24rCJ5976wWd7u0nJ436T3rdYdc4=
 github.com/ipfs/go-log/v2 v2.9.2/go.mod h1:RziRwwXWhndlk8L75RnEe0zeAYaq2heKtEMc3jqUov0=
 github.com/jackpal/go-nat-pmp v1.0.2 h1:KzKSgb7qkJvOUTqYl9/Hg/me3pWgBmERKrTGD7BdWus=

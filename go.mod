@@ -14,7 +14,7 @@ require (
 	github.com/gaissmai/bart v0.27.1
 	github.com/ipfs/go-datastore v0.9.1
 	github.com/ipfs/go-ds-badger4 v0.1.8
-	github.com/ipfs/go-ds-dynamodb v0.2.3-0.20260519155841-d2b45289e5fd // TODO: bump to v0.3.0 once ipfs/go-ds-dynamodb#22 is tagged
+	github.com/ipfs/go-ds-dynamodb v0.2.3-0.20260527134720-5875687bc3f0 // TODO: bump to v0.3.0 once ipfs/go-ds-dynamodb#22 is tagged
 	github.com/ipfs/go-log/v2 v2.9.2
 	github.com/joho/godotenv v1.5.1
 	github.com/letsencrypt/pebble/v2 v2.10.1
