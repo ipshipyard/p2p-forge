@@ -96,7 +96,7 @@ Will download using go mod, build and install the binary in your global Go binar
 
 ### Local testing
 
-Build and run a custom Corefile configuration and on custom ports (DNS port set to `5354` via CLI, HTTP port set to `5380` via custom Corefile):
+Build and run a custom Corefile configuration on custom ports (DNS port set to `5354` via CLI, HTTP port set to `5380` via custom Corefile):
 
 ```console
 $ ./p2p-forge -conf Corefile.local-dev -dns.port 5354
