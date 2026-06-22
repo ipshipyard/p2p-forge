@@ -179,8 +179,10 @@ func WithUserAgent(userAgent string) P2PForgeCertMgrOptions {
 // loopback address while the PeerID-auth signature must still be scoped to
 // the production registration hostname.
 //
-// The client's Timeout, Transport, CheckRedirect, and Jar are honored as-is;
-// PeerID auth is layered on top via httppeeridauth.ClientPeerIDAuth.
+// The client's Timeout, Transport, and CheckRedirect are honored as-is. When the
+// client has no cookie jar, a temporary one is added so a load-balancer session
+// affinity cookie is carried across the PeerID-auth handshake; a jar set by the
+// caller is left untouched.
 func WithHTTPClient(c *http.Client) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
 		if c == nil {

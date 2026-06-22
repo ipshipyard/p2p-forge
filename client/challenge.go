@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 
 	httppeeridauth "github.com/libp2p/go-libp2p/p2p/http/auth"
 
@@ -31,8 +32,10 @@ type sendChallengeOptions struct {
 // loopback address while the PeerID-auth signature must still be scoped to
 // the production registration hostname.
 //
-// The client's Timeout, Transport, CheckRedirect, and Jar are honored as-is;
-// PeerID auth is layered on top via httppeeridauth.ClientPeerIDAuth.
+// The client's Timeout, Transport, and CheckRedirect are honored as-is. When the
+// client has no cookie jar, a temporary one is added so a load-balancer session
+// affinity cookie is carried across the PeerID-auth handshake; a jar set by the
+// caller is left untouched.
 func WithChallengeHTTPClient(c *http.Client) SendChallengeOption {
 	return func(o *sendChallengeOptions) error {
 		if c == nil {
@@ -81,6 +84,24 @@ func SendChallenge(ctx context.Context, baseURL string, privKey crypto.PrivKey, 
 	httpClient := o.httpClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
+	}
+
+	// The registration endpoint may sit behind a load balancer that pins a
+	// client to one backend via a session-affinity cookie (libp2p.direct runs
+	// behind Cloudflare). PeerID auth is a two-request handshake, and the second
+	// request must reach the same backend that issued the challenge, otherwise
+	// that backend rejects an opaque it never minted and the handshake fails with
+	// a 401. A cookie jar carries the affinity cookie across both legs. Add one
+	// when the resolved client has none, copying rather than mutating a
+	// caller-supplied client.
+	if httpClient.Jar == nil {
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			return fmt.Errorf("creating registration cookie jar: %w", err)
+		}
+		withJar := *httpClient
+		withJar.Jar = jar
+		httpClient = &withJar
 	}
 
 	// Execute request wrapped in ClientPeerIDAuth
