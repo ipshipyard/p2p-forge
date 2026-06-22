@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+## [v0.9.1] - 2026-06-22
+
+### Fixed
+- ✨ Fixed AutoTLS registration failing with a `401` when the forge endpoint is load-balanced (such as `registration.libp2p.direct`). The DNS-01 PeerID-auth handshake makes two requests, and without a session-affinity cookie the second can reach a different backend than the first, which never issued the challenge and rejects the request with an additional `401`. `client.SendChallenge` now adds a cookie jar when the supplied `*http.Client` lacks one, so the affinity cookie pins both requests to the same backend. A jar you set via `WithHTTPClient` or `WithChallengeHTTPClient` stays in place. ([#90](https://github.com/ipshipyard/p2p-forge/pull/90))
+
 ## [v0.9.0] - 2026-05-27
 
 ### Changed
