@@ -74,6 +74,8 @@ func newTestWriter() *acmeWriter {
 		Domain:      v2TestDomain,
 		ForgeDomain: "libp2p.direct",
 		Datastore:   ttlDatastore{datastore.NewMapDatastore()},
+		// Tests dial loopback hosts, which destination-IP vetting would reject.
+		AllowPrivateAddrs: true,
 	}
 }
 

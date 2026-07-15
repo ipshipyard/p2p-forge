@@ -61,6 +61,7 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 	var forgeDomain string
 	var forgeRegistrationDomain string
 	var externalTLS bool
+	var allowPrivateAddrs bool
 	var httpListenAddr string
 	var ds datastore.TTLDatastore
 
@@ -80,7 +81,7 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 			switch c.Val() {
 			case "registration-domain":
 				args := c.RemainingArgs()
-				if len(args) > 3 || len(args) == 0 {
+				if len(args) > 4 || len(args) == 0 {
 					return nil, nil, c.ArgErr()
 				}
 
@@ -99,6 +100,12 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 						externalTLSString := v
 						var err error
 						externalTLS, err = strconv.ParseBool(externalTLSString)
+						if err != nil {
+							return nil, nil, c.ArgErr()
+						}
+					case "allow-private-addresses":
+						var err error
+						allowPrivateAddrs, err = strconv.ParseBool(v)
 						if err != nil {
 							return nil, nil, c.ArgErr()
 						}
@@ -162,11 +169,12 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 	initMetrics()
 
 	writer := &acmeWriter{
-		Addr:        httpListenAddr,
-		Domain:      forgeRegistrationDomain,
-		ForgeDomain: forgeDomain,
-		Datastore:   ds,
-		ExternalTLS: externalTLS,
+		Addr:              httpListenAddr,
+		Domain:            forgeRegistrationDomain,
+		ForgeDomain:       forgeDomain,
+		Datastore:         ds,
+		ExternalTLS:       externalTLS,
+		AllowPrivateAddrs: allowPrivateAddrs,
 	}
 	reader := &acmeReader{
 		ForgeDomain: forgeDomain,

@@ -97,7 +97,7 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 
 	// "Real node" check. For now this is the (unchanged) libp2p dialback; the
 	// hardened dialback and the http-ownership proof land in later commits.
-	if err := testAddresses(r.Context(), peerID, typedBody.Addresses, r.Header.Get("User-Agent")); err != nil {
+	if err := c.testAddresses(r.Context(), peerID, typedBody.Addresses, r.Header.Get("User-Agent")); err != nil {
 		writeProblem(w, http.StatusUnprocessableEntity, "verification-failed", fmt.Sprintf("no address verified: %s", err))
 		return
 	}

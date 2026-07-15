@@ -31,11 +31,9 @@ import (
 	"github.com/caddyserver/certmagic"
 
 	"github.com/ipfs/go-datastore"
-	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	httppeeridauth "github.com/libp2p/go-libp2p/p2p/http/auth"
-	"github.com/multiformats/go-multiaddr"
 )
 
 var log = clog.NewWithPlugin(pluginName)
@@ -49,6 +47,11 @@ type acmeWriter struct {
 	Domain      string
 	ForgeDomain string
 	ExternalTLS bool
+
+	// AllowPrivateAddrs disables destination-IP vetting, the address cap, and
+	// the dial timeout on the reachability probe. Off by default; intended for
+	// tests and private deployments that trust the submitted addresses.
+	AllowPrivateAddrs bool
 
 	Datastore datastore.TTLDatastore
 
@@ -162,7 +165,7 @@ func (c *acmeWriter) OnStartup() error {
 			}
 
 			httpUserAgent := r.Header.Get("User-Agent")
-			if err := testAddresses(r.Context(), peerID, typedBody.Addresses, httpUserAgent); err != nil {
+			if err := c.testAddresses(r.Context(), peerID, typedBody.Addresses, httpUserAgent); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(fmt.Sprintf("error testing addresses: %s", err)))
 				return
@@ -239,43 +242,6 @@ func withRequestLogger(next http.Handler) http.Handler {
 			log.Infof("%s %s (status=%d dt=%s ua=%q)", r.Method, r.URL, m.Code, m.Duration, r.UserAgent())
 		}
 	})
-}
-
-func testAddresses(ctx context.Context, p peer.ID, addrs []string, httpUserAgent string) error {
-	agentVersion := agentType(httpUserAgent)
-	h, err := libp2p.New(libp2p.NoListenAddrs, libp2p.DisableRelay())
-	if err != nil {
-		recordPeerProbe("error", agentVersion)
-		return err
-	}
-	defer h.Close()
-
-	var mas []multiaddr.Multiaddr
-	for _, addr := range addrs {
-		ma, err := multiaddr.NewMultiaddr(addr)
-		if err != nil {
-			recordPeerProbe("error", agentVersion)
-			return err
-		}
-		mas = append(mas, ma)
-	}
-
-	err = h.Connect(ctx, peer.AddrInfo{ID: p, Addrs: mas})
-	if err != nil {
-		recordPeerProbe("error", agentVersion)
-		return err
-	}
-
-	// TODO: Do we need to listen on the identify event instead?
-	if v, err := h.Peerstore().Get(p, "AgentVersion"); err == nil {
-		if vs, ok := v.(string); ok {
-			// if we had successful libp2p identify we prefer agentVersion from it
-			agentVersion = vs
-		}
-	}
-	log.Debugf("connected to peer %s - UserAgent: %q", p, agentVersion)
-	recordPeerProbe("ok", agentType(agentVersion))
-	return nil
 }
 
 // agentType returns bound cardinality agent label for metrics.

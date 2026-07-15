@@ -117,7 +117,7 @@ func NewTestInfrastructure(t *testing.T) *TestInfrastructure {
 		errors
 		ipparser %s
 		acme %s {
-			registration-domain %s listen-address=:%d external-tls=true
+			registration-domain %s listen-address=:%d external-tls=true allow-private-addresses=true
 			database-type badger %s
         }
 	}`, forge, forge, forgeRegistration, httpPort, tmpDir)
@@ -1104,7 +1104,7 @@ func NewTestInfrastructureWithDenylist(t *testing.T, cfg DenylistTestConfig) *Te
 		%s
 		ipparser %s
 		acme %s {
-			registration-domain %s listen-address=:%d external-tls=true
+			registration-domain %s listen-address=:%d external-tls=true allow-private-addresses=true
 			database-type badger %s
         }
 	}`, denylistBlock.String(), forge, forge, forgeRegistration, httpPort, tmpDir)
