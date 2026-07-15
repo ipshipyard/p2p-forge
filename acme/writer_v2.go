@@ -52,13 +52,6 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Per-source-IP rate limit, ahead of the asymmetric signature verify.
-	if ip, ok := primaryClientIP(r, c.ClientIPHeader); ok && c.rateLimiter != nil && !c.rateLimiter.allow(ip, time.Now()) {
-		w.Header().Set("Retry-After", "60")
-		writeProblem(w, http.StatusTooManyRequests, "rate-limited", "too many registrations from your address")
-		return
-	}
-
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxV2BodySize))
 	if err != nil {
 		var maxErr *http.MaxBytesError

@@ -60,8 +60,7 @@ type acmeWriter struct {
 
 	Datastore datastore.TTLDatastore
 
-	rateLimiter *ipRateLimiter
-	nonces      *nonceStore
+	nonces *nonceStore
 
 	ln           net.Listener
 	nlSetup      bool

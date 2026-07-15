@@ -235,17 +235,19 @@ below.
 | `409` | Nonce already used (replay). |
 | `413` | Body too large. |
 | `422` | No submitted address could be verified. |
-| `429` | Rate limited. Carries `Retry-After`. |
+
+A fronting proxy may add others, such as `429` when it rate-limits.
 
 ## Anti-abuse
 
-- **Rate limiting** SHOULD run per source IP, before the signature is verified.
-  The forge MUST NOT trust a leftmost `X-Forwarded-For`, which any client can
-  forge; it trusts only the direct connection address plus, when the operator
-  configures one, a proxy header (see `client-ip-header`).
+- **Rate limiting** is the operator's responsibility on the fronting reverse
+  proxy, CDN, or load balancer. The forge does not rate-limit requests itself.
 - **Replay.** The server MUST treat each `nonce` as single-use and reject a
   reused one, so a captured request cannot be replayed within its window.
-- **Denylist** applies to the client IP and to every resolved endpoint IP.
+- **Denylist** applies to the client IP and to every resolved endpoint IP. The
+  forge MUST NOT trust a leftmost `X-Forwarded-For` for the client IP, which any
+  client can forge; it trusts only the direct connection address plus, when the
+  operator configures one, a proxy header (see `client-ip-header`).
 
 ## Operator configuration
 
@@ -256,8 +258,8 @@ Two `acme` block options affect `/v2` (see the README for full syntax):
   private deployment that trusts the submitted addresses. Never enable it on a
   public instance.
 - `client-ip-header <Name>` names the header the fronting proxy sets with the
-  real client IP (for example `CF-Connecting-IP` behind Cloudflare). Without it,
-  only the direct connection address is trusted for rate limiting and denylist.
+  real client IP (for example `CF-Connecting-IP` behind Cloudflare), used for the
+  denylist. Without it, only the direct connection address is trusted.
 
 ## Adding a key type
 
