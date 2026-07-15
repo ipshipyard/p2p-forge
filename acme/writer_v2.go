@@ -115,10 +115,13 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// "Real node" check. For now this is the (unchanged) libp2p dialback; the
-	// hardened dialback and the http-ownership proof land in later commits.
-	if err := c.testAddresses(r.Context(), peerID, typedBody.Addresses, r.Header.Get("User-Agent")); err != nil {
-		writeProblem(w, http.StatusUnprocessableEntity, "verification-failed", fmt.Sprintf("no address verified: %s", err))
+	// Prove the key controls a real, reachable endpoint: the http-ownership
+	// proof (no libp2p) when an http(s) address is given, else the libp2p
+	// dialback.
+	mode, err := c.verifyReachable(r.Context(), verified.KeyID, peerID, typedBody.Addresses, r.Header.Get("User-Agent"))
+	if err != nil {
+		log.Debugf("v2: address verification failed for %s: %v", peerID, err)
+		writeProblem(w, http.StatusUnprocessableEntity, "verification-failed", "no submitted address could be verified")
 		return
 	}
 
@@ -129,12 +132,10 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, v2Response{
-		DID:  verified.KeyID,
-		Name: certWildcard(peerID, c.ForgeDomain),
-		Verification: v2Verification{
-			Mode: "libp2p-dialback",
-		},
-		TTL: int(time.Hour / time.Second),
+		DID:          verified.KeyID,
+		Name:         certWildcard(peerID, c.ForgeDomain),
+		Verification: v2Verification{Mode: mode},
+		TTL:          int(time.Hour / time.Second),
 	})
 }
 
