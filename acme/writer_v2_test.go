@@ -70,13 +70,15 @@ func addrStrings(h host.Host) []string {
 }
 
 func newTestWriter() *acmeWriter {
-	return &acmeWriter{
+	c := &acmeWriter{
 		Domain:      v2TestDomain,
 		ForgeDomain: "libp2p.direct",
 		Datastore:   ttlDatastore{datastore.NewMapDatastore()},
 		// Tests dial loopback hosts, which destination-IP vetting would reject.
 		AllowPrivateAddrs: true,
 	}
+	c.initAntiAbuse()
+	return c
 }
 
 func TestV2ChallengeHandlerRoundTrip(t *testing.T) {

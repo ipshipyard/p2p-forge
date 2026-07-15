@@ -53,7 +53,15 @@ type acmeWriter struct {
 	// tests and private deployments that trust the submitted addresses.
 	AllowPrivateAddrs bool
 
+	// ClientIPHeader, when set, names the request header the fronting proxy
+	// populates with the real client IP (e.g. CF-Connecting-IP). Empty means
+	// only the direct connection address is trusted.
+	ClientIPHeader string
+
 	Datastore datastore.TTLDatastore
+
+	rateLimiter *ipRateLimiter
+	nonces      *nonceStore
 
 	ln           net.Listener
 	nlSetup      bool
@@ -101,6 +109,8 @@ func (c *acmeWriter) OnStartup() error {
 
 	c.ln = ln
 	c.nlSetup = true
+
+	c.initAntiAbuse()
 
 	// server side secret key and peerID not particularly relevant, so we can generate new ones as needed
 	sk, _, err := crypto.GenerateEd25519Key(rand.Reader)
@@ -158,7 +168,7 @@ func (c *acmeWriter) OnStartup() error {
 			}
 
 			// Check denylist before attempting to connect
-			if blocked, reason := checkDenylist(clientIPs(r), typedBody.Addresses); blocked {
+			if blocked, reason := checkDenylist(clientIPs(r, c.ClientIPHeader), typedBody.Addresses); blocked {
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte(fmt.Sprintf("403 Forbidden: %s", reason)))
 				return

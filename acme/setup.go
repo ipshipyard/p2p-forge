@@ -62,6 +62,7 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 	var forgeRegistrationDomain string
 	var externalTLS bool
 	var allowPrivateAddrs bool
+	var clientIPHeader string
 	var httpListenAddr string
 	var ds datastore.TTLDatastore
 
@@ -113,6 +114,12 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 						return nil, nil, c.ArgErr()
 					}
 				}
+			case "client-ip-header":
+				args := c.RemainingArgs()
+				if len(args) != 1 {
+					return nil, nil, c.ArgErr()
+				}
+				clientIPHeader = args[0]
 			case "database-type":
 				args := c.RemainingArgs()
 				if len(args) == 0 {
@@ -175,6 +182,7 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 		Datastore:         ds,
 		ExternalTLS:       externalTLS,
 		AllowPrivateAddrs: allowPrivateAddrs,
+		ClientIPHeader:    clientIPHeader,
 	}
 	reader := &acmeReader{
 		ForgeDomain: forgeDomain,

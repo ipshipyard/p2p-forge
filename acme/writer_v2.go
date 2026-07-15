@@ -52,6 +52,13 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-source-IP rate limit, ahead of the asymmetric signature verify.
+	if ip, ok := primaryClientIP(r, c.ClientIPHeader); ok && c.rateLimiter != nil && !c.rateLimiter.allow(ip, time.Now()) {
+		w.Header().Set("Retry-After", "60")
+		writeProblem(w, http.StatusTooManyRequests, "rate-limited", "too many registrations from your address")
+		return
+	}
+
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxV2BodySize))
 	if err != nil {
 		var maxErr *http.MaxBytesError
@@ -80,6 +87,19 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Single-use nonce: reject a replayed signed request before the dialback.
+	if c.nonces != nil {
+		if err := c.nonces.reserve(r.Context(), peerID, verified.Nonce); err != nil {
+			if errors.Is(err, errReplay) {
+				writeProblem(w, http.StatusConflict, "nonce-replayed", "this request has already been submitted")
+			} else {
+				writeProblem(w, http.StatusInternalServerError, "nonce-store-error", "could not verify request freshness")
+				log.Errorf("v2: nonce store error for %s: %v", peerID, err)
+			}
+			return
+		}
+	}
+
 	typedBody, err := decodeV2Body(body)
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "malformed-body", err.Error())
@@ -90,7 +110,7 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if blocked, reason := checkDenylist(clientIPs(r), typedBody.Addresses); blocked {
+	if blocked, reason := checkDenylist(clientIPs(r, c.ClientIPHeader), typedBody.Addresses); blocked {
 		writeProblem(w, http.StatusForbidden, "denylisted", reason)
 		return
 	}
