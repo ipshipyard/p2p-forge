@@ -3,6 +3,7 @@ package acme
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/stretchr/testify/require"
+	"github.com/yaronf/httpsign"
 )
 
 const v2TestDomain = "registration.example"
@@ -55,9 +57,32 @@ func signedV2Request(t *testing.T, priv crypto.PrivKey, value string, addrs []st
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, "https://"+v2TestDomain+"/v2/_acme-challenge", bytes.NewReader(body))
 	req.Host = v2TestDomain
-	params, err := httpsig.NewSignParams(time.Now(), httpsig.MaxSignatureLifetime)
+	req.Header.Set("Content-Type", "application/json")
+
+	raw, err := priv.Raw()
 	require.NoError(t, err)
-	require.NoError(t, httpsig.SignRequest(req, priv, body, params))
+	keyID, err := httpsig.EncodeDIDKey(priv.GetPublic())
+	require.NoError(t, err)
+
+	digestBody := io.NopCloser(bytes.NewReader(body))
+	cd, err := httpsign.GenerateContentDigestHeader(&digestBody, []string{httpsign.DigestSha256})
+	require.NoError(t, err)
+	req.Header.Set("Content-Digest", cd)
+
+	nb := make([]byte, 16)
+	_, err = rand.Read(nb)
+	require.NoError(t, err)
+	cfg := httpsign.NewSignConfig().SignCreated(true).
+		SetExpires(time.Now().Add(httpsig.MaxSignatureLifetime).Unix()).
+		SetNonce(base64.RawURLEncoding.EncodeToString(nb)).
+		SetKeyID(keyID).
+		SetTag(httpsig.RegistrationTag)
+	signer, err := httpsign.NewEd25519Signer(ed25519.PrivateKey(raw), cfg, httpsign.Headers(httpsig.RegistrationComponents...))
+	require.NoError(t, err)
+	sigInput, sig, err := httpsign.SignRequest(httpsig.SigLabel, *signer, req)
+	require.NoError(t, err)
+	req.Header.Set("Signature-Input", sigInput)
+	req.Header.Set("Signature", sig)
 	return req
 }
 

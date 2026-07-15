@@ -70,26 +70,18 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the signature, digest, freshness window, and authority. This
-	// yields the authenticated public key; identity is derived from it, never
-	// from the body.
-	verified, err := httpsig.VerifyRequest(r, body, httpsig.VerifyConfig{
-		Authority: c.Domain,
-		Now:       time.Now(),
-	})
+	// Verify the signature, digest, freshness window, and authority. Identity is
+	// derived from the signing key in keyid, never from the body.
+	verified, err := verifyV2Request(r, body, c.Domain)
 	if err != nil {
 		writeProblem(w, http.StatusUnauthorized, "signature-invalid", err.Error())
 		return
 	}
-	peerID, err := peer.IDFromPublicKey(verified.PubKey)
-	if err != nil {
-		writeProblem(w, http.StatusUnauthorized, "signature-invalid", fmt.Sprintf("deriving peer ID: %s", err))
-		return
-	}
+	peerID := verified.peerID
 
 	// Single-use nonce: reject a replayed signed request before the dialback.
 	if c.nonces != nil {
-		if err := c.nonces.reserve(r.Context(), peerID, verified.Nonce); err != nil {
+		if err := c.nonces.reserve(r.Context(), peerID, verified.nonce); err != nil {
 			if errors.Is(err, errReplay) {
 				writeProblem(w, http.StatusConflict, "nonce-replayed", "this request has already been submitted")
 			} else {
@@ -118,7 +110,7 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 	// Prove the key controls a real, reachable endpoint: the http-ownership
 	// proof (no libp2p) when an http(s) address is given, else the libp2p
 	// dialback.
-	mode, err := c.verifyReachable(r.Context(), verified.KeyID, peerID, typedBody.Addresses, r.Header.Get("User-Agent"))
+	mode, err := c.verifyReachable(r.Context(), verified.keyID, peerID, typedBody.Addresses, r.Header.Get("User-Agent"))
 	if err != nil {
 		log.Debugf("v2: address verification failed for %s: %v", peerID, err)
 		writeProblem(w, http.StatusUnprocessableEntity, "verification-failed", "no submitted address could be verified")
@@ -132,7 +124,7 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, v2Response{
-		DID:          verified.KeyID,
+		DID:          verified.keyID,
 		Name:         certWildcard(peerID, c.ForgeDomain),
 		Verification: v2Verification{Mode: mode},
 		TTL:          int(time.Hour / time.Second),

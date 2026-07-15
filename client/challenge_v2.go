@@ -3,6 +3,9 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +16,7 @@ import (
 	"github.com/ipshipyard/p2p-forge/internal/httpsig"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/yaronf/httpsign"
 )
 
 // RegistrationAPIVersion selects which forge registration API the client uses.
@@ -70,12 +74,8 @@ func SendChallengeV2(ctx context.Context, baseURL string, privKey crypto.PrivKey
 		}
 	}
 
-	params, err := httpsig.NewSignParams(time.Now(), httpsig.MaxSignatureLifetime)
-	if err != nil {
+	if err := signV2Request(req, privKey, body); err != nil {
 		return err
-	}
-	if err := httpsig.SignRequest(req, privKey, body, params); err != nil {
-		return fmt.Errorf("signing v2 registration request: %w", err)
 	}
 
 	httpClient := o.httpClient
@@ -123,4 +123,59 @@ func marshalChallengeBody(challenge string, addrs []multiaddr.Multiaddr) ([]byte
 func isEd25519(k crypto.PrivKey) bool {
 	_, ok := k.(*crypto.Ed25519PrivateKey)
 	return ok
+}
+
+// signV2Request signs req in place for the /v2 profile: an RFC 9421 signature
+// (via yaronf/httpsign) over the fixed components, plus an RFC 9530
+// Content-Digest over body.
+func signV2Request(req *http.Request, privKey crypto.PrivKey, body []byte) error {
+	if !isEd25519(privKey) {
+		return fmt.Errorf("v2 registration requires an Ed25519 key")
+	}
+	raw, err := privKey.Raw()
+	if err != nil {
+		return fmt.Errorf("reading private key: %w", err)
+	}
+	keyID, err := httpsig.EncodeDIDKey(privKey.GetPublic())
+	if err != nil {
+		return err
+	}
+	nonce, err := generateNonce()
+	if err != nil {
+		return err
+	}
+
+	digestBody := io.NopCloser(bytes.NewReader(body))
+	cd, err := httpsign.GenerateContentDigestHeader(&digestBody, []string{httpsign.DigestSha256})
+	if err != nil {
+		return fmt.Errorf("generating content-digest: %w", err)
+	}
+	req.Header.Set("Content-Digest", cd)
+
+	cfg := httpsign.NewSignConfig().
+		SignCreated(true).
+		SetExpires(time.Now().Add(httpsig.MaxSignatureLifetime).Unix()).
+		SetNonce(nonce).
+		SetKeyID(keyID).
+		SetTag(httpsig.RegistrationTag)
+	signer, err := httpsign.NewEd25519Signer(ed25519.PrivateKey(raw), cfg, httpsign.Headers(httpsig.RegistrationComponents...))
+	if err != nil {
+		return fmt.Errorf("building signer: %w", err)
+	}
+	sigInput, sig, err := httpsign.SignRequest(httpsig.SigLabel, *signer, req)
+	if err != nil {
+		return fmt.Errorf("signing v2 registration request: %w", err)
+	}
+	req.Header.Set("Signature-Input", sigInput)
+	req.Header.Set("Signature", sig)
+	return nil
+}
+
+// generateNonce returns a fresh base64url nonce with 128 bits of entropy.
+func generateNonce() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generating nonce: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
