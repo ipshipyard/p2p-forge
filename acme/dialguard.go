@@ -9,7 +9,6 @@ import (
 	"github.com/ipshipyard/p2p-forge/denylist"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/control"
-	"github.com/libp2p/go-libp2p/core/event"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -20,10 +19,6 @@ import (
 // probeTimeout bounds a single reachability probe so a slow or blackholed
 // target cannot pin a request goroutine and its libp2p host.
 const probeTimeout = 15 * time.Second
-
-// identifyWait bounds how long we wait for the identify exchange to report the
-// peer's agent version (a metric label only).
-const identifyWait = 3 * time.Second
 
 // maxProbeAddresses bounds how many addresses one registration may ask the
 // forge to dial, limiting dial fan-out and reflection. It is enforced only when
@@ -242,13 +237,6 @@ func (c *acmeWriter) testAddresses(ctx context.Context, p peer.ID, addrStrs []st
 	}
 	defer h.Close()
 
-	// Subscribe before connecting so identify completion is observed
-	// deterministically instead of racing a peerstore read.
-	sub, subErr := h.EventBus().Subscribe(new(event.EvtPeerIdentificationCompleted))
-	if subErr == nil {
-		defer sub.Close()
-	}
-
 	if err := h.Connect(dialCtx, peer.AddrInfo{ID: p, Addrs: dialable}); err != nil {
 		recordPeerProbe("error", agentVersion)
 		// Return a generic error: the underlying dial result (refused vs
@@ -258,37 +246,7 @@ func (c *acmeWriter) testAddresses(ctx context.Context, p peer.ID, addrStrs []st
 		return fmt.Errorf("peer is not reachable at any submitted address")
 	}
 
-	agentVersion = identifiedAgent(dialCtx, sub, p, agentVersion)
-	log.Debugf("connected to peer %s - UserAgent: %q", p, agentVersion)
-	recordPeerProbe("ok", agentType(agentVersion))
+	log.Debugf("connected to peer %s (agent %q)", p, agentVersion)
+	recordPeerProbe("ok", agentVersion)
 	return nil
-}
-
-// identifiedAgent waits briefly for the identify exchange with p to complete and
-// returns its reported agent version, falling back to the passed value.
-func identifiedAgent(ctx context.Context, sub event.Subscription, p peer.ID, fallback string) string {
-	if sub == nil {
-		return fallback
-	}
-	timer := time.NewTimer(identifyWait)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return fallback
-		case <-timer.C:
-			return fallback
-		case e, ok := <-sub.Out():
-			if !ok {
-				return fallback
-			}
-			ev, ok := e.(event.EvtPeerIdentificationCompleted)
-			if ok && ev.Peer == p {
-				if ev.AgentVersion != "" {
-					return ev.AgentVersion
-				}
-				return fallback
-			}
-		}
-	}
 }
