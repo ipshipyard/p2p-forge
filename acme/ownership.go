@@ -2,6 +2,7 @@ package acme
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -15,14 +16,15 @@ import (
 	"github.com/ipshipyard/p2p-forge/client"
 	"github.com/ipshipyard/p2p-forge/denylist"
 	"github.com/ipshipyard/p2p-forge/internal/httpsig"
+	"github.com/ipshipyard/p2p-forge/internal/ownership"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 const (
 	// ownershipFetchTimeout bounds one proof fetch.
 	ownershipFetchTimeout = 15 * time.Second
-	// ownershipBodyLimit caps the proof response body (the body is empty).
-	ownershipBodyLimit = 4 << 10
+	// ownershipBodyLimit caps the proof response body (a compact JWT).
+	ownershipBodyLimit = 8 << 10
 	// maxOwnershipURLs caps how many http endpoints one request may present.
 	maxOwnershipURLs = 8
 	// overallVerifyTimeout bounds all reachability work for one registration,
@@ -116,15 +118,22 @@ func (c *acmeWriter) fetchAndVerifyOwnership(ctx context.Context, keyID string, 
 		}
 	}
 
-	hdr, body, err := fetchOwnershipProof(ctx, o, ip, keyID)
+	// The proof must verify under the registration key, never a key the proof
+	// itself names.
+	regPub, err := httpsig.DecodeDIDKey(keyID)
 	if err != nil {
 		return err
 	}
-	return httpsig.VerifyOwnership(hdr, body, httpsig.OwnershipVerifyConfig{
-		KeyID:          keyID,
-		ExpectedOrigin: o.Origin,
-		Now:            time.Now(),
-	})
+	raw, err := regPub.Raw()
+	if err != nil {
+		return fmt.Errorf("reading registration key: %w", err)
+	}
+
+	proof, err := fetchOwnershipProof(ctx, o, ip, keyID)
+	if err != nil {
+		return err
+	}
+	return ownership.Verify(string(proof), ed25519.PublicKey(raw), o.Origin, time.Now())
 }
 
 // resolvePinnedIP resolves host to a single vettable public IP to pin the fetch
@@ -159,11 +168,11 @@ func (c *acmeWriter) resolvePinnedIP(ctx context.Context, host string) (netip.Ad
 // For https it first tries WebPKI verification (strong host binding); if that
 // fails (e.g. the node has no valid cert yet) it retries without verification,
 // where host binding rests on the IP pin and key binding on the signature.
-func fetchOwnershipProof(ctx context.Context, o client.HTTPOrigin, ip netip.Addr, keyID string) (http.Header, []byte, error) {
+func fetchOwnershipProof(ctx context.Context, o client.HTTPOrigin, ip netip.Addr, keyID string) ([]byte, error) {
 	proofURL := o.Origin + client.WellKnownProofPath + keyID
 	pinned := net.JoinHostPort(ip.String(), o.Port)
 
-	do := func(insecure bool) (http.Header, []byte, error) {
+	do := func(insecure bool) ([]byte, error) {
 		transport := &http.Transport{
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 				var d net.Dialer
@@ -182,27 +191,27 @@ func fetchOwnershipProof(ctx context.Context, o client.HTTPOrigin, ip netip.Addr
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, proofURL, nil)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		resp, err := httpClient.Do(req)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return nil, nil, fmt.Errorf("ownership endpoint returned %s", resp.Status)
+			return nil, fmt.Errorf("ownership endpoint returned %s", resp.Status)
 		}
 		body, err := io.ReadAll(io.LimitReader(resp.Body, ownershipBodyLimit))
 		if err != nil {
-			return nil, nil, fmt.Errorf("reading ownership proof: %w", err)
+			return nil, fmt.Errorf("reading ownership proof: %w", err)
 		}
-		return resp.Header, body, nil
+		return body, nil
 	}
 
 	if o.Scheme == "https" {
-		hdr, body, err := do(false)
+		body, err := do(false)
 		if err == nil {
-			return hdr, body, nil
+			return body, nil
 		}
 		// Retry without verification only when the cert itself failed to verify
 		// (the node has no valid CA cert yet). Do not retry on a refused
@@ -211,7 +220,7 @@ func fetchOwnershipProof(ctx context.Context, o client.HTTPOrigin, ip netip.Addr
 		if errors.As(err, &certErr) {
 			return do(true)
 		}
-		return nil, nil, err
+		return nil, err
 	}
 	return do(true)
 }

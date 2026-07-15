@@ -166,37 +166,31 @@ fails.
 
 ### http-ownership (no libp2p)
 
-The node MUST serve a static proof at:
+The node MUST serve, at the key-scoped path below, a compact EdDSA JWT
+([RFC 7519](https://www.rfc-editor.org/rfc/rfc7519)) proving its key controls the
+origin:
 
 ```
 GET https://<host>[:<port>]/.well-known/p2p-forge/<did:key>
 ```
 
-The response MUST have an empty body and carry these headers, which the node
-signs once and reuses until close to expiry (so the proof is cacheable and can be
-signed offline):
+The response body is the JWT (`Content-Type: application/jwt`), signed with the
+node's Ed25519 key. The node signs it once and reuses it until close to expiry,
+so it is cacheable and can be signed offline. The JWT header MUST use
+`alg: EdDSA`, and the payload carries these claims:
 
-```
-P2p-Forge-Origin: https://<host>:<port>
-Content-Digest: sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:
-Signature-Input: sig1=("p2p-forge-origin" "content-digest");created=...;expires=...;keyid="did:key:z6Mk...";tag="p2p-forge-ownership"
-Signature: sig1=:<base64 signature over the base>:
-```
+| Claim | Meaning |
+| --- | --- |
+| `origin` | The canonical `scheme://host:port` the key controls. |
+| `iat` | Issued-at, unix seconds. |
+| `exp` | Expiry, unix seconds. `exp - iat` MUST NOT exceed 14 days. |
 
-The signature base is:
-
-```
-"p2p-forge-origin": https://<host>:<port>
-"content-digest": sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:
-"@signature-params": ("p2p-forge-origin" "content-digest");created=...;expires=...;keyid="did:key:z6Mk...";tag="p2p-forge-ownership"
-```
-
-The forge MUST verify the proof under the registration `keyid`, and MUST NOT use
-any key the proof itself names. It MUST check that `P2p-Forge-Origin` equals the
-origin it connected to (scheme, host, and port are all bound, so an `http` proof
-cannot satisfy an `https` address), and MUST check the window is current. The
-window MUST NOT exceed 14 days. Freshness comes from the forge fetching the proof
-live, so a stale proof at a dead node does not verify.
+The forge MUST verify the JWT under the registration `keyid`, and MUST NOT trust
+the key or `kid` the token itself carries. It MUST check that the `origin` claim
+equals the origin it connected to (scheme, host, and port are all bound, so an
+`http` proof cannot satisfy an `https` address), and MUST reject an expired
+token. Freshness comes from the forge fetching the proof live, so a stale proof
+at a dead node does not verify.
 
 What this proves: the key holder controls what is served at that origin right
 now. It does not prove the node is dialable over libp2p (a CDN can serve the
@@ -206,7 +200,7 @@ address.
 Notes for operators of the endpoint:
 
 - The proof is offline-signable. The identity key does not have to be online in
-  the HTTP tier. A static file server or a CDN can serve the four headers.
+  the HTTP tier. A static file server or a CDN can serve the token.
 - The endpoint MUST answer on port 80 or 443 on the public forge instance.
 - The forge MUST pin the connection to the endpoint's resolved public IP, MUST
   refuse a non-public target, and MUST NOT follow redirects. It verifies TLS
