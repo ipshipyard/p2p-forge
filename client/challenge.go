@@ -3,7 +3,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -123,18 +122,8 @@ func SendChallenge(ctx context.Context, baseURL string, privKey crypto.PrivKey, 
 //
 // Sending the request to the DNS server requires performing HTTP PeerID Authentication for the corresponding peerID
 func ChallengeRequest(ctx context.Context, registrationURL string, challenge string, addrs []multiaddr.Multiaddr) (*http.Request, error) {
-	maStrs := make([]string, len(addrs))
-	for i, addr := range addrs {
-		maStrs[i] = addr.String()
-	}
-
-	body, err := json.Marshal(&struct {
-		Value     string   `json:"value"`
-		Addresses []string `json:"addresses"`
-	}{
-		Value:     challenge,
-		Addresses: maStrs,
-	})
+	// Shared with the v2 client so the two wire bodies cannot drift apart.
+	body, err := marshalChallengeBody(challenge, addrs)
 	if err != nil {
 		return nil, err
 	}

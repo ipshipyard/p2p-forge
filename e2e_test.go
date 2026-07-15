@@ -314,6 +314,58 @@ func TestSetACMEChallenge(t *testing.T) {
 	}
 }
 
+// TestSetACMEChallengeV2 exercises the full v2 stack: an RFC 9421-signed
+// registration (no libp2p PeerID-auth handshake), the hardened-later dialback,
+// and the unchanged DNS-01 TXT readback.
+func TestSetACMEChallengeV2(t *testing.T) {
+	t.Parallel()
+	testInfra := NewTestInfrastructure(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sk, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := libp2p.New(libp2p.Identity(sk))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testDigest := sha256.Sum256([]byte("test-v2"))
+	testChallenge := base64.RawURLEncoding.EncodeToString(testDigest[:])
+
+	err = client.SendChallengeV2(ctx, fmt.Sprintf("http://127.0.0.1:%d", testInfra.HTTPPort), sk, testChallenge, h.Addrs(), authToken, "", func(req *http.Request) error {
+		req.Host = forgeRegistration
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	peerIDb36, err := peer.ToCid(h.ID()).StringOfBase(multibase.Base36)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := new(dns.Msg)
+	m.Question = make([]dns.Question, 1)
+	m.Question[0] = dns.Question{Qclass: dns.ClassINET, Name: fmt.Sprintf("_acme-challenge.%s.%s.", peerIDb36, forge), Qtype: dns.TypeTXT}
+
+	r, err := dns.Exchange(m, testInfra.DNSServerUDPAddress)
+	if err != nil {
+		t.Fatalf("Could not send message: %s", err)
+	}
+	if r.Rcode != dns.RcodeSuccess || len(r.Answer) == 0 {
+		t.Fatalf("Expected successful reply with TXT value, got empty %s", dns.RcodeToString[r.Rcode])
+	}
+	expectedAnswer := fmt.Sprintf(`%s	10	IN	TXT	"%s"`, m.Question[0].Name, testChallenge)
+	if r.Answer[0].String() != expectedAnswer {
+		t.Fatalf("Expected %s reply, got %s", expectedAnswer, r.Answer[0].String())
+	}
+}
+
 // Confirm we ALWAYS return empty TXT instead of NODATA to avoid
 // issues described in https://github.com/ipshipyard/p2p-forge/issues/52
 func TestACMEChallengeNoDNS01Value(t *testing.T) {

@@ -164,6 +164,7 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 	writer := &acmeWriter{
 		Addr:        httpListenAddr,
 		Domain:      forgeRegistrationDomain,
+		ForgeDomain: forgeDomain,
 		Datastore:   ds,
 		ExternalTLS: externalTLS,
 	}

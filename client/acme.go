@@ -107,6 +107,7 @@ type P2PForgeCertMgrConfig struct {
 	produceShortAddrs          bool
 	renewCheckInterval         time.Duration
 	registrationDelay          time.Duration
+	registrationAPIVersion     RegistrationAPIVersion
 }
 
 type P2PForgeCertMgrOptions func(*P2PForgeCertMgrConfig) error
@@ -167,6 +168,21 @@ func WithUserAgent(userAgent string) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
 		config.userAgent = userAgent
 		return nil
+	}
+}
+
+// WithRegistrationAPIVersion selects the forge registration API: RegistrationV1
+// (default), RegistrationV2 (RFC 9421, Ed25519 only), or RegistrationAuto (v2
+// with fallback to v1 when the endpoint is unavailable).
+func WithRegistrationAPIVersion(v RegistrationAPIVersion) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		switch v {
+		case RegistrationV1, RegistrationV2, RegistrationAuto:
+			config.registrationAPIVersion = v
+			return nil
+		default:
+			return fmt.Errorf("WithRegistrationAPIVersion: unknown version %q", v)
+		}
 	}
 }
 
@@ -381,6 +397,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 			httpClient:                 mgrCfg.httpClient,
 			userAgent:                  mgrCfg.userAgent,
 			allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
+			apiVersion:                 mgrCfg.registrationAPIVersion,
 			log:                        acmeLog.Named("dns01solver"),
 			resolver:                   mgrCfg.resolver,
 		},
@@ -642,6 +659,7 @@ type dns01P2PForgeSolver struct {
 	httpClient                 *http.Client
 	userAgent                  string
 	allowPrivateForgeAddresses bool
+	apiVersion                 RegistrationAPIVersion
 	log                        *zap.SugaredLogger
 	resolver                   *net.Resolver
 }
@@ -722,20 +740,42 @@ func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challe
 	if d.httpClient != nil {
 		sendOpts = append(sendOpts, WithChallengeHTTPClient(d.httpClient))
 	}
-	err := SendChallenge(ctx,
-		d.forgeRegistrationEndpoint,
-		h.Peerstore().PrivKey(h.ID()),
-		dns01value,
-		advertisedAddrs,
-		d.forgeAuth,
-		d.userAgent,
-		d.modifyForgeRequest,
-		sendOpts...,
-	)
+	privKey := h.Peerstore().PrivKey(h.ID())
+
+	sendV1 := func() error {
+		return SendChallenge(ctx, d.forgeRegistrationEndpoint, privKey, dns01value,
+			advertisedAddrs, d.forgeAuth, d.userAgent, d.modifyForgeRequest, sendOpts...)
+	}
+	sendV2 := func() error {
+		return SendChallengeV2(ctx, d.forgeRegistrationEndpoint, privKey, dns01value,
+			advertisedAddrs, d.forgeAuth, d.userAgent, d.modifyForgeRequest, sendOpts...)
+	}
+
+	var err error
+	switch d.apiVersion {
+	case RegistrationV2:
+		err = sendV2()
+	case RegistrationAuto:
+		// v2 needs an Ed25519 key; fall back to v1 when the key is unsupported
+		// or the forge has no v2 endpoint.
+		if isEd25519(privKey) {
+			if err = sendV2(); err == nil {
+				return nil
+			}
+			if !errors.Is(err, ErrV2Unsupported) {
+				return fmt.Errorf("p2p-forge broker registration error: %w", err)
+			}
+			d.log.Infow("v2 registration unavailable, falling back to v1", "err", err)
+		} else {
+			d.log.Debugw("identity key is not Ed25519, using v1 registration")
+		}
+		err = sendV1()
+	default:
+		err = sendV1()
+	}
 	if err != nil {
 		return fmt.Errorf("p2p-forge broker registration error: %w", err)
 	}
-
 	return nil
 }
 
