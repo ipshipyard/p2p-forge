@@ -42,6 +42,8 @@ type P2PForgeCertMgr struct {
 	log                        *zap.SugaredLogger
 	allowPrivateForgeAddresses bool
 	produceShortAddrs          bool
+	userAgent                  string
+	httpClient                 *http.Client
 
 	hasCert     bool // tracking if we've received a certificate
 	certCheckMx sync.RWMutex
@@ -344,6 +346,8 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
 		produceShortAddrs:          mgrCfg.produceShortAddrs,
 		registrationDelay:          mgrCfg.registrationDelay,
+		userAgent:                  mgrCfg.userAgent,
+		httpClient:                 mgrCfg.httpClient,
 	}
 
 	// NOTE: callback getter is necessary to avoid circular dependency
@@ -450,12 +454,21 @@ func (m *P2PForgeCertMgr) Start() error {
 		name := certName(h.ID(), m.forgeDomain)
 		certExists := localCertExists(m.ctx, m.certmagic, name)
 		startCertManagement := func() {
-			// respect WithRegistrationDelay if no cert exists
-			if !certExists && m.registrationDelay != 0 {
-				remainingDelay := m.registrationDelay - time.Since(start)
-				if remainingDelay > 0 {
-					log.Infof("registration delay set to %s, sleeping for remaining %s", m.registrationDelay, remainingDelay)
-					time.Sleep(remainingDelay)
+			if !certExists {
+				// respect WithRegistrationDelay
+				if m.registrationDelay != 0 {
+					remainingDelay := m.registrationDelay - time.Since(start)
+					if remainingDelay > 0 {
+						log.Infof("registration delay set to %s, sleeping for remaining %s", m.registrationDelay, remainingDelay)
+						time.Sleep(remainingDelay)
+					}
+				}
+				// confirm the broker is up before first-time issuance:
+				// without it issuance cannot succeed and certmagic would keep
+				// retrying full ACME flows with backoff for weeks, spamming
+				// ERRORs in logs
+				if !m.waitForHealthyBroker(m.ctx, log) {
+					return
 				}
 			}
 			// start internal certmagic instance
