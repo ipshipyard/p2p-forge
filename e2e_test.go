@@ -315,7 +315,7 @@ func TestSetACMEChallenge(t *testing.T) {
 }
 
 // TestSetACMEChallengeV2 exercises the full v2 stack: an RFC 9421-signed
-// registration (no libp2p PeerID-auth handshake), the hardened-later dialback,
+// registration (no libp2p PeerID-auth handshake), the SSRF-hardened dialback,
 // and the unchanged DNS-01 TXT readback.
 func TestSetACMEChallengeV2(t *testing.T) {
 	t.Parallel()

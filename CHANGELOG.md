@@ -22,8 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `X-Forwarded-For` is no longer trusted for the client IP used by the denylist. Only the direct connection address, plus a header named via `client-ip-header`, is trusted, so a client can no longer forge its way around an IP denylist entry.
 
-### Fixed
-
 ## [v0.9.1] - 2026-06-22
 
 ### Fixed
