@@ -4,7 +4,9 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -31,7 +33,10 @@ type HTTPOrigin struct {
 
 // CanonicalOrigin parses an origin-only http(s) URL into its canonical form.
 // It rejects userinfo, a path, query, or fragment so the signed origin is
-// unambiguous and cannot be widened by trailing URL components.
+// unambiguous and cannot be widened by trailing URL components. An IP-literal
+// host is normalized to its canonical textual form, and an IPv6 literal is
+// bracketed in Origin ("https://[2001:db8::1]:443"), so both sides of the
+// proof derive the same origin string and the string stays valid in a URL.
 func CanonicalOrigin(rawURL string) (HTTPOrigin, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -53,6 +58,14 @@ func CanonicalOrigin(rawURL string) (HTTPOrigin, error) {
 	if host == "" {
 		return HTTPOrigin{}, fmt.Errorf("origin must contain a host")
 	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		// A zone (fe80::1%eth0) names an interface on one host: it can never
+		// be a publicly verifiable origin, and its "%" is not URL-safe.
+		if ip.Zone() != "" {
+			return HTTPOrigin{}, fmt.Errorf("origin must not contain an IPv6 zone")
+		}
+		host = ip.Unmap().String()
+	}
 	port := u.Port()
 	if port == "" {
 		if u.Scheme == "https" {
@@ -62,7 +75,7 @@ func CanonicalOrigin(rawURL string) (HTTPOrigin, error) {
 		}
 	}
 	return HTTPOrigin{
-		Origin: u.Scheme + "://" + host + ":" + port,
+		Origin: u.Scheme + "://" + net.JoinHostPort(host, port),
 		Scheme: u.Scheme,
 		Host:   host,
 		Port:   port,

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -106,6 +107,7 @@ func TestCanonicalOriginServer(t *testing.T) {
 		"https://user@gw.example",
 		"ftp://gw.example",
 		"https://gw.example?x=1",
+		"https://[fe80::1%25eth0]", // zoned IPv6: host-local, never verifiable
 	} {
 		_, err := client.CanonicalOrigin(bad)
 		require.Error(t, err, bad)
@@ -113,4 +115,49 @@ func TestCanonicalOriginServer(t *testing.T) {
 	o, err := client.CanonicalOrigin("https://GW.Example")
 	require.NoError(t, err)
 	require.Equal(t, "https://gw.example:443", o.Origin)
+
+	// IPv6 literals stay bracketed in the origin string (so it remains a
+	// valid URL) and IP literals collapse to one canonical textual form.
+	o, err = client.CanonicalOrigin("https://[2001:DB8:0::1]")
+	require.NoError(t, err)
+	require.Equal(t, "https://[2001:db8::1]:443", o.Origin)
+	require.Equal(t, "2001:db8::1", o.Host)
+
+	// An IPv4-mapped IPv6 literal collapses to its IPv4 form.
+	o, err = client.CanonicalOrigin("http://[::ffff:1.2.3.4]")
+	require.NoError(t, err)
+	require.Equal(t, "http://1.2.3.4:80", o.Origin)
+}
+
+func TestHTTPOwnershipIPv6Literal(t *testing.T) {
+	// An IPv6-literal endpoint must produce a fetchable proof URL and a
+	// matching origin claim on both sides.
+	ln, err := net.Listen("tcp", "[::1]:0")
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Listener.Close()
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+	handler, err := client.OwnershipProofHandler(priv, srv.URL)
+	require.NoError(t, err)
+	mux.Handle("/", handler)
+	did, err := httpsig.EncodeDIDKey(priv.GetPublic())
+	require.NoError(t, err)
+
+	// Pin the bracketed form itself: without this, both sides would agree on
+	// even a malformed origin string (they derive it through the same call)
+	// and the fetch, which dials the pinned IP rather than the URL host,
+	// would pass regardless.
+	o, err := client.CanonicalOrigin(srv.URL)
+	require.NoError(t, err)
+	require.Equal(t, "http://"+srv.Listener.Addr().String(), o.Origin)
+	require.Contains(t, o.Origin, "[::1]")
+
+	c := newTestWriter()
+	require.NoError(t, c.verifyHTTPOwnership(t.Context(), did, []string{srv.URL}))
 }

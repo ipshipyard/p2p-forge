@@ -186,6 +186,10 @@ so it is cacheable and can be signed offline. The JWT header MUST use
 | `iat` | Issued-at, unix seconds. |
 | `exp` | Expiry, unix seconds. `exp - iat` MUST NOT exceed 14 days. |
 
+`origin` uses the lowercase host and an explicit port. An IP-literal host is in
+its canonical textual form, and an IPv6 literal is bracketed, for example
+`https://[2001:db8::1]:443`.
+
 The forge MUST verify the JWT under the registration `keyid`, and MUST NOT trust
 the key or `kid` the token itself carries. It MUST check that the `origin` claim
 equals the origin it connected to (scheme, host, and port are all bound, so an
