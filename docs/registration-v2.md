@@ -92,9 +92,10 @@ covered, because a TLS-terminating load balancer rewrites the scheme the backend
 sees. A request MUST NOT carry a query string, and the server MUST reject one, so
 `@query` is not covered either.
 
-The server MUST reject a `created` more than 30 seconds in the future or an
-`expires` more than 2 minutes in the past (clock skew). A client with a fast
-clock SHOULD NOT sign `created` far ahead of real time.
+The server MUST reject a `created` more than 30 seconds in the future, a
+`created` older than 7 minutes (the 5-minute maximum lifetime plus 2 minutes of
+allowance for a slow client clock), and an `expires` that has already passed. A
+client with a fast clock SHOULD NOT sign `created` far ahead of real time.
 
 ### Signature base
 
@@ -108,13 +109,13 @@ trailing newline. For a POST to `registration.libp2p.direct` it looks like:
 "@path": /v2/_acme-challenge
 "content-type": application/json
 "content-digest": sha-256=:<base64>:
-"@signature-params": ("@method" "@authority" "@path" "content-type" "content-digest");created=1700000000;expires=1700000060;nonce="dGVzdG5vbmNlMTIzNA";keyid="did:key:z6Mk...";tag="p2p-forge-reg"
+"@signature-params": ("@method" "@authority" "@path" "content-type" "content-digest");created=1700000000;expires=1700000060;nonce="dGVzdG5vbmNlMTIzNDU2Nw";keyid="did:key:z6Mk...";tag="p2p-forge-reg"
 ```
 
 The `Signature-Input` and `Signature` headers use the label `sig1`:
 
 ```
-Signature-Input: sig1=("@method" "@authority" "@path" "content-type" "content-digest");created=1700000000;expires=1700000060;nonce="dGVzdG5vbmNlMTIzNA";keyid="did:key:z6Mk...";tag="p2p-forge-reg"
+Signature-Input: sig1=("@method" "@authority" "@path" "content-type" "content-digest");created=1700000000;expires=1700000060;nonce="dGVzdG5vbmNlMTIzNDU2Nw";keyid="did:key:z6Mk...";tag="p2p-forge-reg"
 Signature: sig1=:<base64 of the Ed25519 signature over the base>:
 ```
 
@@ -224,17 +225,23 @@ non-public targets, and MUST bound the dial with a timeout.
 ## Errors
 
 The server SHOULD return [problem+json (RFC 9457)](https://www.rfc-editor.org/rfc/rfc9457)
-with a distinct `type` per class, and MUST use a status consistent with the table
-below.
+and MUST use a status consistent with the table below. Each error class carries
+a stable fragment at the end of its `type` URI; a client that needs to tell
+classes apart SHOULD match on that fragment.
 
-| Status | When |
-| --- | --- |
-| `400` | Malformed body, digest, signature, address, or a query string. |
-| `401` | Signature invalid, or outside the clock window. |
-| `403` | Denylisted, or missing `Forge-Authorization` when required. |
-| `409` | Nonce already used (replay). |
-| `413` | Body too large. |
-| `422` | No submitted address could be verified. |
+| Status | `type` fragment | When |
+| --- | --- | --- |
+| `400` | `unexpected-query` | The request carries a query string. |
+| `400` | `malformed-body` | The body is not the JSON object above, has unknown fields, or has trailing data. |
+| `400` | `malformed-value` | `value` is not unpadded base64url of a 32-byte SHA-256 digest. |
+| `400` | `malformed-signature` | The request does not conform to this profile: unparseable signature headers, a bad `did:key`, a nonce under 128 bits, a missing `created` or `expires`, `expires - created` over 300 seconds, or a `Content-Digest` that is malformed or does not match the body. |
+| `401` | `signature-invalid` | Signature verification failed, a required component is not covered, the clock window is violated, or `@authority` is not the registration domain. |
+| `403` | `forbidden` | Missing or wrong `Forge-Authorization` where the operator requires one. |
+| `403` | `denylisted` | The client IP or a submitted address is denylisted. |
+| `409` | `nonce-replayed` | The nonce was already used (replay). |
+| `413` | `body-too-large` | The body exceeds 8 KiB. |
+| `422` | `verification-failed` | No submitted address could be verified. |
+| `500` | `misconfigured`, `nonce-store-error`, `storage-error` | Server-side failure; safe to retry later. |
 
 A fronting proxy may add others, such as `429` when it rate-limits.
 

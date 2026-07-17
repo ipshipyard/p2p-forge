@@ -64,10 +64,16 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify the signature, digest, freshness window, and authority. Identity is
-	// derived from the signing key in keyid, never from the body.
+	// derived from the signing key in keyid, never from the body. A request
+	// that does not conform to the profile grammar is 400; one that conforms
+	// but fails authentication is 401.
 	verified, err := verifyV2Request(r, body, c.Domain)
 	if err != nil {
-		writeProblem(w, http.StatusUnauthorized, "signature-invalid", err.Error())
+		if errors.Is(err, errMalformed) {
+			writeProblem(w, http.StatusBadRequest, "malformed-signature", err.Error())
+		} else {
+			writeProblem(w, http.StatusUnauthorized, "signature-invalid", err.Error())
+		}
 		return
 	}
 	peerID := verified.peerID
@@ -150,7 +156,6 @@ type v2Response struct {
 
 type v2Verification struct {
 	Mode string `json:"mode"`
-	Addr string `json:"addr,omitempty"`
 }
 
 type v2Profile struct {
@@ -206,12 +211,16 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// problemTypeBase prefixes every problem+json "type" URI. The fragment is the
+// type slug; the Errors section of the linked document lists them all.
+const problemTypeBase = "https://github.com/ipshipyard/p2p-forge/blob/main/docs/registration-v2.md#"
+
 // writeProblem emits an RFC 9457 problem+json response.
 func writeProblem(w http.ResponseWriter, status int, problemType, detail string) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"type":   "https://specs.ipfs.tech/p2p-forge/v2/errors#" + problemType,
+		"type":   problemTypeBase + problemType,
 		"title":  http.StatusText(status),
 		"status": status,
 		"detail": detail,

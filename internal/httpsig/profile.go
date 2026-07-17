@@ -19,12 +19,16 @@ const (
 
 	// MaxSignatureLifetime bounds expires-created.
 	MaxSignatureLifetime = 5 * time.Minute
-	// MaxClockSkew is how far in the past `expires` may already be.
+	// MaxClockSkew extends the accepted age of `created` beyond
+	// MaxSignatureLifetime, tolerating a slow client clock. `expires` gets no
+	// such grace: a signature past its own deadline is rejected outright.
 	MaxClockSkew = 2 * time.Minute
 	// MaxForwardDrift is how far in the future `created` may be.
 	MaxForwardDrift = 30 * time.Second
-	// MinNonceLen is the minimum accepted nonce length in base64url characters.
-	MinNonceLen = 16
+	// MinNonceLen is the minimum accepted nonce length in base64url
+	// characters: 22 characters is the shortest encoding of the required 128
+	// bits of entropy.
+	MinNonceLen = 22
 )
 
 // RegistrationComponents is the fixed, ordered set of covered components for a

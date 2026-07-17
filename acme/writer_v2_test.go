@@ -52,6 +52,20 @@ func newRegistrantHost(t *testing.T) (host.Host, crypto.PrivKey) {
 }
 
 func signedV2Request(t *testing.T, priv crypto.PrivKey, value string, addrs []string) *http.Request {
+	return signedV2RequestOpts(t, priv, value, addrs, v2SignOpts{})
+}
+
+// v2SignOpts tweaks how signedV2RequestOpts signs so tests can produce
+// requests that violate the profile; the zero value is fully conforming.
+type v2SignOpts struct {
+	omitCreated bool
+	omitExpires bool
+	expiresIn   time.Duration // 0 means httpsig.MaxSignatureLifetime
+	nonce       string        // "" means a fresh 22-character nonce
+	keyID       string        // "" means the did:key of the signing key
+}
+
+func signedV2RequestOpts(t *testing.T, priv crypto.PrivKey, value string, addrs []string, opts v2SignOpts) *http.Request {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{"value": value, "addresses": addrs})
 	require.NoError(t, err)
@@ -61,22 +75,35 @@ func signedV2Request(t *testing.T, priv crypto.PrivKey, value string, addrs []st
 
 	raw, err := priv.Raw()
 	require.NoError(t, err)
-	keyID, err := httpsig.EncodeDIDKey(priv.GetPublic())
-	require.NoError(t, err)
+	keyID := opts.keyID
+	if keyID == "" {
+		keyID, err = httpsig.EncodeDIDKey(priv.GetPublic())
+		require.NoError(t, err)
+	}
 
 	digestBody := io.NopCloser(bytes.NewReader(body))
 	cd, err := httpsign.GenerateContentDigestHeader(&digestBody, []string{httpsign.DigestSha256})
 	require.NoError(t, err)
 	req.Header.Set("Content-Digest", cd)
 
-	nb := make([]byte, 16)
-	_, err = rand.Read(nb)
-	require.NoError(t, err)
-	cfg := httpsign.NewSignConfig().SignCreated(true).
-		SetExpires(time.Now().Add(httpsig.MaxSignatureLifetime).Unix()).
-		SetNonce(base64.RawURLEncoding.EncodeToString(nb)).
+	nonce := opts.nonce
+	if nonce == "" {
+		nb := make([]byte, 16)
+		_, err = rand.Read(nb)
+		require.NoError(t, err)
+		nonce = base64.RawURLEncoding.EncodeToString(nb)
+	}
+	cfg := httpsign.NewSignConfig().SignCreated(!opts.omitCreated).
+		SetNonce(nonce).
 		SetKeyID(keyID).
 		SetTag(httpsig.RegistrationTag)
+	if !opts.omitExpires {
+		expiresIn := opts.expiresIn
+		if expiresIn == 0 {
+			expiresIn = httpsig.MaxSignatureLifetime
+		}
+		cfg = cfg.SetExpires(time.Now().Add(expiresIn).Unix())
+	}
 	signer, err := httpsign.NewEd25519Signer(ed25519.PrivateKey(raw), cfg, httpsign.Headers(httpsig.RegistrationComponents...))
 	require.NoError(t, err)
 	sigInput, sig, err := httpsign.SignRequest(httpsig.SigLabel, *signer, req)
@@ -140,14 +167,73 @@ func TestV2ChallengeHandlerRejects(t *testing.T) {
 	t.Run("tampered body", func(t *testing.T) {
 		h, priv := newRegistrantHost(t)
 		req := signedV2Request(t, priv, value, addrStrings(h))
-		// Swap the body after signing: the digest (covered by the signature)
-		// no longer matches.
+		// Swap the body after signing: the digest no longer matches, and a
+		// body contradicting its own digest is a malformed request (400).
 		bad := []byte(`{"value":"` + value + `","addresses":[]}`)
 		req.Body = io.NopCloser(bytes.NewReader(bad))
 		req.ContentLength = int64(len(bad))
 		rec := httptest.NewRecorder()
 		newTestWriter().handleV2Challenge(rec, req)
-		require.Equal(t, http.StatusUnauthorized, rec.Code)
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("missing created", func(t *testing.T) {
+		h, priv := newRegistrantHost(t)
+		req := signedV2RequestOpts(t, priv, value, addrStrings(h), v2SignOpts{omitCreated: true})
+		rec := httptest.NewRecorder()
+		newTestWriter().handleV2Challenge(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	})
+
+	t.Run("missing expires", func(t *testing.T) {
+		h, priv := newRegistrantHost(t)
+		req := signedV2RequestOpts(t, priv, value, addrStrings(h), v2SignOpts{omitExpires: true})
+		rec := httptest.NewRecorder()
+		newTestWriter().handleV2Challenge(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	})
+
+	t.Run("expires-created over the lifetime", func(t *testing.T) {
+		h, priv := newRegistrantHost(t)
+		req := signedV2RequestOpts(t, priv, value, addrStrings(h), v2SignOpts{expiresIn: httpsig.MaxSignatureLifetime + time.Minute})
+		rec := httptest.NewRecorder()
+		newTestWriter().handleV2Challenge(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	})
+
+	t.Run("nonce below 128 bits", func(t *testing.T) {
+		h, priv := newRegistrantHost(t)
+		// 12 bytes encode to 16 base64url characters, under the 22 minimum.
+		shortNonce := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 12))
+		req := signedV2RequestOpts(t, priv, value, addrStrings(h), v2SignOpts{nonce: shortNonce})
+		rec := httptest.NewRecorder()
+		newTestWriter().handleV2Challenge(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	})
+
+	t.Run("expired signature", func(t *testing.T) {
+		h, priv := newRegistrantHost(t)
+		// A conforming grammar (delta under the lifetime) whose deadline has
+		// passed: the profile checks admit it, the verifier's clock policy
+		// must reject it as unauthenticated (401), not malformed.
+		req := signedV2RequestOpts(t, priv, value, addrStrings(h), v2SignOpts{expiresIn: -time.Minute})
+		rec := httptest.NewRecorder()
+		newTestWriter().handleV2Challenge(rec, req)
+		require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
+	})
+
+	t.Run("keyid of a different key", func(t *testing.T) {
+		// The security-critical property: claiming someone else's did:key
+		// with a signature from another key must fail verification.
+		h, priv := newRegistrantHost(t)
+		victim, _, err := crypto.GenerateEd25519Key(rand.Reader)
+		require.NoError(t, err)
+		victimDID, err := httpsig.EncodeDIDKey(victim.GetPublic())
+		require.NoError(t, err)
+		req := signedV2RequestOpts(t, priv, value, addrStrings(h), v2SignOpts{keyID: victimDID})
+		rec := httptest.NewRecorder()
+		newTestWriter().handleV2Challenge(rec, req)
+		require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
 	})
 
 	t.Run("wrong authority", func(t *testing.T) {

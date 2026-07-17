@@ -20,6 +20,11 @@ type v2Verified struct {
 	nonce  string
 }
 
+// errMalformed marks a request that does not conform to the /v2 signing
+// profile (unparseable or missing signature material), as opposed to one that
+// fails authentication. The handler maps it to 400 instead of 401.
+var errMalformed = errors.New("malformed request")
+
 // verifyV2Request checks the RFC 9421 signature (via yaronf/httpsign) against
 // the fixed /v2 profile: the covered components, the RFC 9530 Content-Digest
 // over body, the freshness window, the tag, and that @authority is the
@@ -29,27 +34,47 @@ func verifyV2Request(r *http.Request, body []byte, domain string) (*v2Verified, 
 	// Read the keyid before verification so we can resolve the key it names.
 	details, err := httpsign.RequestDetails(httpsig.SigLabel, r)
 	if err != nil {
-		return nil, fmt.Errorf("parsing signature: %w", err)
+		return nil, fmt.Errorf("%w: parsing signature: %w", errMalformed, err)
 	}
 	if details.KeyID == nil {
-		return nil, errors.New("signature is missing a keyid")
+		return nil, fmt.Errorf("%w: signature is missing a keyid", errMalformed)
 	}
-	if details.Nonce == nil || len(*details.Nonce) < httpsig.MinNonceLen {
-		return nil, errors.New("signature is missing a nonce")
+	if details.Nonce == nil {
+		return nil, fmt.Errorf("%w: signature is missing a nonce", errMalformed)
+	}
+	if len(*details.Nonce) < httpsig.MinNonceLen {
+		return nil, fmt.Errorf("%w: nonce is shorter than %d base64url characters", errMalformed, httpsig.MinNonceLen)
+	}
+	// The library treats expires as optional and only bounds created, so the
+	// profile's "expires present, expires-created <= MaxSignatureLifetime" is
+	// enforced here. These are unauthenticated parses at this point, but they
+	// are covered by the signature verified below, so a reject is safe and a
+	// pass is re-checked by the verifier's own policy.
+	if details.Created == nil {
+		return nil, fmt.Errorf("%w: signature is missing a created parameter", errMalformed)
+	}
+	if details.Expires == nil {
+		return nil, fmt.Errorf("%w: signature is missing an expires parameter", errMalformed)
+	}
+	if details.Expires.Sub(*details.Created) > httpsig.MaxSignatureLifetime {
+		return nil, fmt.Errorf("%w: expires-created exceeds %s", errMalformed, httpsig.MaxSignatureLifetime)
 	}
 	regPub, err := httpsig.DecodeDIDKey(*details.KeyID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errMalformed, err)
 	}
 	raw, err := regPub.Raw()
 	if err != nil {
-		return nil, fmt.Errorf("reading key: %w", err)
+		return nil, fmt.Errorf("%w: reading key: %w", errMalformed, err)
 	}
 
-	// The Content-Digest must match the body we actually read.
+	// The Content-Digest must match the body we actually read. Both a
+	// malformed header and a mismatch are the request contradicting itself,
+	// knowable without any key material, so they class as malformed (400)
+	// rather than as an authentication failure.
 	digestBody := io.NopCloser(bytes.NewReader(body))
 	if err := httpsign.ValidateContentDigestHeader(r.Header.Values("Content-Digest"), &digestBody, []string{httpsign.DigestSha256}); err != nil {
-		return nil, fmt.Errorf("content-digest: %w", err)
+		return nil, fmt.Errorf("%w: content-digest: %w", errMalformed, err)
 	}
 
 	// Verify the signature. The verifier requires every covered component, so a
