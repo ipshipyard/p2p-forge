@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+## [v0.10.0] - 2026-07-17
+
+### Added
+- ✨ First-time certificate setup now confirms the registration broker is healthy (HTTP 204 from `/v1/health`) before starting ACME issuance. While the broker keeps failing the check, the client logs a single ERROR and re-checks hourly instead of running doomed ACME flows that certmagic would retry with backoff for weeks; issuance starts automatically once the broker recovers. Nodes with a certificate already in storage are unaffected. The re-check interval respects a `Retry-After` header sent by the broker when it is longer than the hourly default, capped at 24h. The probe is exposed as `client.CheckBrokerHealth` together with the `client.HealthCheckPath` constant; see [ipfs/kubo#11397](https://github.com/ipfs/kubo/pull/11397) for an example of wiring this in a downstream node. ([#91](https://github.com/ipshipyard/p2p-forge/pull/91))
+
 ## [v0.9.1] - 2026-06-22
 
 ### Fixed
