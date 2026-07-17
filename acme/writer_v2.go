@@ -47,7 +47,7 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Cheapest gate first: optional shared-secret access token.
-	if c.forgeAuthKey != "" && r.Header.Get(client.ForgeAuthHeader) != c.forgeAuthKey {
+	if c.forgeAuthKey != "" && !constantTimeEqual(r.Header.Get(client.ForgeAuthHeader), c.forgeAuthKey) {
 		writeProblem(w, http.StatusForbidden, "forbidden", fmt.Sprintf("missing or invalid %s header", client.ForgeAuthHeader))
 		return
 	}

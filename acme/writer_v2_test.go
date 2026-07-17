@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ipfs/go-datastore"
+	"github.com/ipshipyard/p2p-forge/client"
 	"github.com/ipshipyard/p2p-forge/internal/httpsig"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -234,6 +235,24 @@ func TestV2ChallengeHandlerRejects(t *testing.T) {
 		rec := httptest.NewRecorder()
 		newTestWriter().handleV2Challenge(rec, req)
 		require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
+	})
+
+	t.Run("wrong forge auth token", func(t *testing.T) {
+		c := newTestWriter()
+		c.forgeAuthKey = "test-secret"
+
+		missing := httptest.NewRequest(http.MethodPost, "https://"+v2TestDomain+"/v2/_acme-challenge", nil)
+		missing.Host = v2TestDomain
+		rec := httptest.NewRecorder()
+		c.handleV2Challenge(rec, missing)
+		require.Equal(t, http.StatusForbidden, rec.Code, "missing token")
+
+		wrong := httptest.NewRequest(http.MethodPost, "https://"+v2TestDomain+"/v2/_acme-challenge", nil)
+		wrong.Host = v2TestDomain
+		wrong.Header.Set(client.ForgeAuthHeader, "not-the-secret")
+		rec = httptest.NewRecorder()
+		c.handleV2Challenge(rec, wrong)
+		require.Equal(t, http.StatusForbidden, rec.Code, "wrong token")
 	})
 
 	t.Run("wrong authority", func(t *testing.T) {

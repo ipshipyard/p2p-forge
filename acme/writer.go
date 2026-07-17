@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -128,7 +130,7 @@ func (c *acmeWriter) OnStartup() error {
 			}
 			if c.forgeAuthKey != "" {
 				auth := r.Header.Get(client.ForgeAuthHeader)
-				if c.forgeAuthKey != auth {
+				if !constantTimeEqual(auth, c.forgeAuthKey) {
 					w.WriteHeader(http.StatusForbidden)
 					fmt.Fprintf(w, "403 Forbidden: Missing %s header.", client.ForgeAuthHeader)
 					return
@@ -280,6 +282,14 @@ func agentType(agentVersion string) string {
 		return "browser"
 	}
 	return "other"
+}
+
+// constantTimeEqual compares two secrets without leaking where they differ,
+// hashing first so a length difference leaks nothing either.
+func constantTimeEqual(a, b string) bool {
+	ha := sha256.Sum256([]byte(a))
+	hb := sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(ha[:], hb[:]) == 1
 }
 
 type requestBody struct {
