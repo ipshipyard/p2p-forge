@@ -3,7 +3,7 @@ $ORIGIN libp2p.direct.
 
 ;; SOA Records
 @                               86400   IN      SOA     aws1.libp2p.direct. domains.ipshipyard.com. (
-                                                        2026032701  ; serial
+                                                        2026072001  ; serial
                                                         86400       ; refresh
                                                         2400        ; retry
                                                         604800      ; expire
@@ -54,8 +54,8 @@ libp2p.direct.                                    86400   IN        CAA     0 is
 ;; HTTP Service
 ;; NOTE: HTTP endpoints MUST have cert from LE due to the CAA record above.
 ;; Cloudflare has setting for specifying CA provider, and me pinned it to LE.
-registration.libp2p.direct.     86400   IN      NS      hera.ns.cloudflare.com.
-registration.libp2p.direct.     86400   IN      NS      lloyd.ns.cloudflare.com.
+registration.libp2p.direct.     86400   IN      NS      elinore.ns.cloudflare.com.
+registration.libp2p.direct.     86400   IN      NS      sam.ns.cloudflare.com.
 
 ;; PSL Records
 ;; This makes libp2p.direct an eTLD, meaning verious permissions and limits are applied per peerid.libp2p.direct
