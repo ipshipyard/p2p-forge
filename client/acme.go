@@ -174,6 +174,11 @@ func WithUserAgent(userAgent string) P2PForgeCertMgrOptions {
 // WithRegistrationAPIVersion selects the forge registration API: RegistrationV1
 // (default), RegistrationV2 (RFC 9421, Ed25519 only), or RegistrationAuto (v2
 // with fallback to v1 when the endpoint is unavailable).
+//
+// In this certmagic flow the node advertises its libp2p addresses, so a v2 or
+// auto registration is verified by the forge's libp2p dialback. A forge that
+// offers only the http-ownership proof is not reachable through this option;
+// use SendChallengeV2 directly with an http(s) address to register there.
 func WithRegistrationAPIVersion(v RegistrationAPIVersion) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
 		switch v {
@@ -751,32 +756,34 @@ func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challe
 			advertisedAddrs, d.forgeAuth, d.userAgent, d.modifyForgeRequest, sendOpts...)
 	}
 
-	var err error
-	switch d.apiVersion {
-	case RegistrationV2:
-		err = sendV2()
-	case RegistrationAuto:
-		// v2 needs an Ed25519 key; fall back to v1 when the key is unsupported
-		// or the forge has no v2 endpoint.
-		if isEd25519(privKey) {
-			if err = sendV2(); err == nil {
-				return nil
-			}
-			if !errors.Is(err, ErrV2Unsupported) {
-				return fmt.Errorf("p2p-forge broker registration error: %w", err)
-			}
-			d.log.Infow("v2 registration unavailable, falling back to v1", "err", err)
-		} else {
-			d.log.Debugw("identity key is not Ed25519, using v1 registration")
-		}
-		err = sendV1()
-	default:
-		err = sendV1()
-	}
-	if err != nil {
+	if err := d.register(isEd25519(privKey), sendV1, sendV2); err != nil {
 		return fmt.Errorf("p2p-forge broker registration error: %w", err)
 	}
 	return nil
+}
+
+// register picks the registration API per d.apiVersion and runs it. In auto
+// mode it uses v2 for an Ed25519 key and falls back to v1 only when the forge
+// has no v2 endpoint (ErrV2Unsupported); any other v2 error, such as a
+// verification failure, is returned as is rather than retried on v1.
+func (d *dns01P2PForgeSolver) register(isEd25519 bool, sendV1, sendV2 func() error) error {
+	switch d.apiVersion {
+	case RegistrationV2:
+		return sendV2()
+	case RegistrationAuto:
+		if !isEd25519 {
+			d.log.Debugw("identity key is not Ed25519, using v1 registration")
+			return sendV1()
+		}
+		err := sendV2()
+		if err == nil || !errors.Is(err, ErrV2Unsupported) {
+			return err
+		}
+		d.log.Infow("v2 registration unavailable, falling back to v1", "err", err)
+		return sendV1()
+	default:
+		return sendV1()
+	}
 }
 
 func (d *dns01P2PForgeSolver) CleanUp(ctx context.Context, challenge acme.Challenge) error {
