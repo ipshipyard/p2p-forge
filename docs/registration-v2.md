@@ -180,6 +180,11 @@ libp2p multiaddr to dial (where the dialback is supported). It tries the
 ownership proof first, and falls back to the dialback if that is absent or
 fails.
 
+The forge bounds the work per registration: it considers at most the first 8
+`http(s)` addresses and at most the first 32 multiaddrs (relay addresses are
+skipped without counting), and ignores the rest. Clients SHOULD lead with the
+addresses most likely to verify.
+
 ### http-ownership (no libp2p)
 
 The node MUST serve, at the key-scoped path below, a compact EdDSA JWT
@@ -309,15 +314,17 @@ denied.
 
 ## Operator configuration
 
-Two `acme` block options affect `/v2` (see the README for full syntax):
+Two settings in the `acme` Corefile block affect `/v2` (see the README for the
+full syntax):
 
-- `allow-private-addresses true` turns off destination-IP vetting, the address
-  cap, and the dial timeout. Off by default. Use it only for local testing or a
-  private deployment that trusts the submitted addresses. Never enable it on a
-  public instance.
-- `client-ip-header <Name>` names the header the fronting proxy sets with the
-  real client IP (for example `CF-Connecting-IP` behind Cloudflare), used for the
-  denylist. Without it, only the direct connection address is trusted.
+- `allow-private-addresses=true` (an argument on the `registration-domain`
+  line) turns off every reachability safeguard: destination-IP vetting, the
+  address caps, the dialback IP pinning, and the verification timeouts. Off by
+  default. Use it only for local testing or a private deployment that trusts
+  the submitted addresses. Never enable it on a public instance.
+- `client-ip-header <name>` names the header the fronting proxy sets with the
+  real client IP (for example `CF-Connecting-IP` behind Cloudflare), used for
+  the denylist. Without it, only the direct connection address is trusted.
 
 ## Adding a key type
 

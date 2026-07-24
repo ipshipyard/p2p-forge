@@ -38,6 +38,10 @@ func TestVetDestIP(t *testing.T) {
 		"198.18.0.1",             // benchmarking
 		"240.0.0.1",              // reserved / Class E
 		"255.255.255.255",        // broadcast
+		"192.0.0.170",            // IETF protocol assignments (RFC 6890)
+		"192.0.0.2",              // DS-Lite CPE (RFC 7335)
+		"192.88.99.1",            // deprecated 6to4 relay anycast
+		"100::1",                 // discard-only (RFC 6666)
 	}
 	for _, s := range blocked {
 		t.Run("blocked/"+s, func(t *testing.T) {

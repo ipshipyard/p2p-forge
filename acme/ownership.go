@@ -81,8 +81,9 @@ func partitionAddrs(addrs []string) (httpURLs, libp2pAddrs []string) {
 // verifyHTTPOwnership tries each submitted http endpoint until one serves a
 // valid ownership proof signed by the registration key pub.
 func (c *acmeWriter) verifyHTTPOwnership(ctx context.Context, pub ed25519.PublicKey, keyID string, urls []string) error {
+	// URLs past the cap are ignored, not rejected, matching the multiaddr cap.
 	if !c.AllowPrivateAddrs && len(urls) > maxOwnershipURLs {
-		return fmt.Errorf("too many http addresses (%d > %d)", len(urls), maxOwnershipURLs)
+		urls = urls[:maxOwnershipURLs]
 	}
 	var lastErr error
 	for _, raw := range urls {

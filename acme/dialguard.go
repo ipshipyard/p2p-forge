@@ -16,13 +16,15 @@ import (
 	manet "github.com/multiformats/go-multiaddr/net"
 )
 
-// probeTimeout bounds a single reachability probe so a slow or blackholed
-// target cannot pin a request goroutine and its libp2p host.
+// probeTimeout bounds a whole reachability probe, DNS resolution included, so
+// a slow or blackholed target cannot pin a request goroutine and its libp2p
+// host.
 const probeTimeout = 15 * time.Second
 
-// maxProbeAddresses bounds how many addresses one registration may ask the
-// forge to dial, limiting dial fan-out and reflection. It is enforced only when
-// address vetting is on (see acmeWriter.AllowPrivateAddrs).
+// maxProbeAddresses bounds how many submitted addresses one registration may
+// make the forge resolve and dial; addresses beyond the cap are ignored, not
+// rejected. Enforced only when address vetting is on (see
+// acmeWriter.AllowPrivateAddrs).
 const maxProbeAddresses = 32
 
 // blockedPrefixes are IP ranges the forge must never dial: they reach internal,
@@ -33,9 +35,12 @@ const maxProbeAddresses = 32
 var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),      // "this host on this network" (RFC 6890)
 	netip.MustParsePrefix("100.64.0.0/10"),  // CGNAT (RFC 6598)
+	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments, incl. DS-Lite (RFC 6890, RFC 7335)
+	netip.MustParsePrefix("192.88.99.0/24"), // deprecated 6to4 relay anycast (RFC 7526)
 	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking (RFC 2544)
 	netip.MustParsePrefix("240.0.0.0/4"),    // reserved / Class E
 	netip.MustParsePrefix("::/96"),          // IPv4-compatible IPv6 (deprecated, embeds v4)
+	netip.MustParsePrefix("100::/64"),       // discard-only (RFC 6666)
 	netip.MustParsePrefix("64:ff9b::/96"),   // NAT64 well-known (RFC 6052)
 	netip.MustParsePrefix("64:ff9b:1::/48"), // NAT64 local-use (RFC 8215)
 	netip.MustParsePrefix("2002::/16"),      // 6to4 (RFC 3056)
@@ -145,6 +150,7 @@ func resolveAndVet(ctx context.Context, resolver *madns.Resolver, addrStrs []str
 		dialable []multiaddr.Multiaddr
 		ips      []netip.Addr
 		seen     = map[netip.Addr]struct{}{}
+		inputs   int
 	)
 outer:
 	for _, s := range addrStrs {
@@ -154,6 +160,13 @@ outer:
 		}
 		if isCircuit(m) {
 			continue
+		}
+		// Bound the resolution work: addresses past the cap are ignored, so a
+		// long list cannot make the forge resolve dozens of names.
+		if !allowPrivate {
+			if inputs++; inputs > maxProbeAddresses {
+				break
+			}
 		}
 
 		resolved := []multiaddr.Multiaddr{m}
@@ -194,14 +207,19 @@ outer:
 // testAddresses verifies the peer is reachable and authenticates as p by
 // dialing its addresses over libp2p. When address vetting is enabled (the
 // default) it caps the address count, refuses non-public targets, pins the
-// vetted IPs with a connection gater against DNS rebinding, and bounds the dial
-// with a timeout.
+// vetted IPs with a connection gater against DNS rebinding, and bounds the
+// whole probe, resolution included, with a timeout.
 func (c *acmeWriter) testAddresses(ctx context.Context, p peer.ID, addrStrs []string, httpUserAgent string) error {
 	agentVersion := agentType(httpUserAgent)
 
-	if !c.AllowPrivateAddrs && len(addrStrs) > maxProbeAddresses {
-		recordPeerProbe("error", agentVersion)
-		return fmt.Errorf("too many addresses (%d > %d)", len(addrStrs), maxProbeAddresses)
+	// The timeout covers everything a probe does, resolution included: /dns*
+	// inputs resolved against a tarpit nameserver could otherwise hold this
+	// goroutine for minutes, and the v1 handler calls in with no timeout of
+	// its own.
+	if !c.AllowPrivateAddrs {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, probeTimeout)
+		defer cancel()
 	}
 
 	dialable, ips, err := resolveAndVet(ctx, madns.DefaultResolver, addrStrs, c.AllowPrivateAddrs)
@@ -222,11 +240,7 @@ func (c *acmeWriter) testAddresses(ctx context.Context, p peer.ID, addrStrs []st
 	}
 
 	opts := []libp2p.Option{libp2p.NoListenAddrs, libp2p.DisableRelay()}
-	dialCtx := ctx
 	if !c.AllowPrivateAddrs {
-		var cancel context.CancelFunc
-		dialCtx, cancel = context.WithTimeout(ctx, probeTimeout)
-		defer cancel()
 		opts = append(opts, libp2p.ConnectionGater(newIPGater(ips)))
 	}
 
@@ -237,7 +251,7 @@ func (c *acmeWriter) testAddresses(ctx context.Context, p peer.ID, addrStrs []st
 	}
 	defer h.Close()
 
-	if err := h.Connect(dialCtx, peer.AddrInfo{ID: p, Addrs: dialable}); err != nil {
+	if err := h.Connect(ctx, peer.AddrInfo{ID: p, Addrs: dialable}); err != nil {
 		recordPeerProbe("error", agentVersion)
 		// Return a generic error: the underlying dial result (refused vs
 		// handshake-fail vs timeout) would let a caller port-scan public hosts

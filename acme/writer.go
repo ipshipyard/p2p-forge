@@ -50,9 +50,10 @@ type acmeWriter struct {
 	ForgeDomain string
 	ExternalTLS bool
 
-	// AllowPrivateAddrs disables destination-IP vetting, the address cap, and
-	// the dial timeout on the reachability probe. Off by default; intended for
-	// tests and private deployments that trust the submitted addresses.
+	// AllowPrivateAddrs disables every reachability safeguard: destination-IP
+	// vetting, the address caps, the dialback IP pinning, and the probe and
+	// overall verification timeouts. Off by default; intended for tests and
+	// private deployments that trust the submitted addresses.
 	AllowPrivateAddrs bool
 
 	// ClientIPHeader, when set, names the request header the fronting proxy
