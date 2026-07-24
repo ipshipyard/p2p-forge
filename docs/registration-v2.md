@@ -187,30 +187,54 @@ The node MUST serve, at the key-scoped path below, a compact EdDSA JWT
 origin:
 
 ```
-GET https://<host>[:<port>]/.well-known/p2p-forge/<did:key>
+GET http(s)://<host>[:<port>]/.well-known/p2p-forge/<did:key>
 ```
+
+The `p2p-forge` well-known path suffix may be registered in the IANA registry
+([RFC 8615](https://www.rfc-editor.org/rfc/rfc8615)) in the future, if this
+API sees enough adoption.
 
 The response body is the JWT (`Content-Type: application/jwt`), signed with the
 node's Ed25519 key. The node signs it once and reuses it until close to expiry,
-so it is cacheable and can be signed offline. The JWT header MUST use
-`alg: EdDSA`, and the payload carries these claims:
+so it is cacheable and can be signed offline. The JWT header MUST carry
+`alg: EdDSA` and `typ: p2p-forge-ownership+jwt` (explicit typing per
+[RFC 8725](https://www.rfc-editor.org/rfc/rfc8725), so no other JWT signed by
+the same key can pass as an ownership proof). The payload carries these claims:
 
 | Claim | Meaning |
 | --- | --- |
-| `origin` | The canonical `scheme://host:port` the key controls. |
+| `origin` | The canonical `scheme://host:port` the key controls (below). |
 | `iat` | Issued-at, unix seconds. |
-| `exp` | Expiry, unix seconds. `exp - iat` MUST NOT exceed 14 days. |
+| `exp` | Expiry, unix seconds. `exp - iat` MUST NOT exceed 14 days, with no extra allowance. |
 
-`origin` uses the lowercase host and an explicit port. An IP-literal host is in
-its canonical textual form, and an IPv6 literal is bracketed, for example
-`https://[2001:db8::1]:443`.
+The `origin` string is `scheme://host:port` built as follows:
+
+1. `scheme` is lowercase, `http` or `https` only.
+2. There is no userinfo, path, query, or fragment; a lone trailing `/` in the
+   source URL is dropped.
+3. `host` is lowercase. An IP-literal host is in its canonical textual form
+   ([RFC 5952](https://www.rfc-editor.org/rfc/rfc5952) for IPv6), an
+   IPv4-mapped IPv6 literal collapses to its IPv4 form, an IPv6 literal stays
+   bracketed, and a zoned IPv6 literal (`fe80::1%eth0`) is rejected.
+4. `port` is always explicit: `443` fills in for `https` and `80` for `http`
+   when the URL has none.
+
+For example `https://GW.Example` becomes `https://gw.example:443`, and
+`http://[::ffff:1.2.3.4]` becomes `http://1.2.3.4:80`. This differs from the
+serialization browsers use for the `Origin` header
+([RFC 6454](https://www.rfc-editor.org/rfc/rfc6454) section 6.2), which omits
+a default port; the always-explicit port keeps the comparison a single string
+equality with no per-scheme table.
 
 The forge MUST verify the JWT under the registration `keyid`, and MUST NOT trust
 the key or `kid` the token itself carries. It MUST check that the `origin` claim
-equals the origin it connected to (scheme, host, and port are all bound, so an
-`http` proof cannot satisfy an `https` address), and MUST reject an expired
-token. Freshness comes from the forge fetching the proof live, so a stale proof
-at a dead node does not verify.
+equals, as an exact string, the origin it connected to (scheme, host, and port
+are all bound, so an `http` proof cannot satisfy an `https` address), and MUST
+reject an expired token. The verifier allows 5 minutes of clock skew on `iat`
+and `exp`, and a signer MAY backdate `iat` to tolerate a slow verifier clock;
+the 14-day cap on `exp - iat` still applies as written. Freshness comes from
+the forge fetching the proof live, so a stale proof at a dead node does not
+verify.
 
 What this proves: the key holder controls what is served at that origin right
 now. It does not prove the node is dialable over libp2p (a CDN can serve the
@@ -221,9 +245,13 @@ Notes for operators of the endpoint:
 
 - The proof is offline-signable. The identity key does not have to be online in
   the HTTP tier. A static file server or a CDN can serve the token.
-- The endpoint MUST answer on port 80 or 443 on the public forge instance.
-- The forge MUST pin the connection to the endpoint's resolved public IP, MUST
-  refuse a non-public target, and MUST NOT follow redirects. It does not
+- The endpoint may answer on any port, so a node behind NAT can serve the
+  proof on a port forwarded via UPnP or router config. The public IP is what
+  is being proven and denylisted; the port does not matter, and the
+  libp2p-dialback mode accepts arbitrary ports too.
+- The forge MUST pin each connection to a vetted resolved public IP of the
+  endpoint (it MAY try one address per family when the host resolves to both),
+  MUST refuse a non-public target, and MUST NOT follow redirects. It does not
   require a CA-verified TLS certificate on this fetch: a node registers
   precisely because it has no publicly trusted cert yet, and the proof's
   authenticity comes from its signature plus the pinned IP, not from the

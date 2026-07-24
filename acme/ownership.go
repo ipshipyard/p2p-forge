@@ -15,9 +15,7 @@ import (
 
 	"github.com/ipshipyard/p2p-forge/client"
 	"github.com/ipshipyard/p2p-forge/denylist"
-	"github.com/ipshipyard/p2p-forge/internal/httpsig"
 	"github.com/ipshipyard/p2p-forge/internal/ownership"
-	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 const (
@@ -35,7 +33,7 @@ const (
 // verifyReachable proves the peer controls a submitted address, trying the
 // no-libp2p http-ownership proof first and falling back to the libp2p dialback.
 // It returns the verification mode that succeeded.
-func (c *acmeWriter) verifyReachable(ctx context.Context, keyID string, peerID peer.ID, addrs []string, userAgent string) (string, error) {
+func (c *acmeWriter) verifyReachable(ctx context.Context, v *v2Verified, addrs []string, userAgent string) (string, error) {
 	if !c.AllowPrivateAddrs {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, overallVerifyTimeout)
@@ -46,14 +44,14 @@ func (c *acmeWriter) verifyReachable(ctx context.Context, keyID string, peerID p
 
 	var lastErr error
 	if len(httpURLs) > 0 {
-		if err := c.verifyHTTPOwnership(ctx, keyID, httpURLs); err == nil {
+		if err := c.verifyHTTPOwnership(ctx, v.pub, v.keyID, httpURLs); err == nil {
 			return "http-ownership", nil
 		} else {
 			lastErr = err
 		}
 	}
 	if len(libp2pAddrs) > 0 {
-		if err := c.testAddresses(ctx, peerID, libp2pAddrs, userAgent); err == nil {
+		if err := c.testAddresses(ctx, v.peerID, libp2pAddrs, userAgent); err == nil {
 			return "libp2p-dialback", nil
 		} else {
 			lastErr = err
@@ -67,9 +65,11 @@ func (c *acmeWriter) verifyReachable(ctx context.Context, keyID string, peerID p
 
 // partitionAddrs splits submitted addresses into http(s) origin URLs (verified
 // by ownership proof) and everything else (verified by libp2p dialback).
+// Schemes are case-insensitive (RFC 3986); CanonicalOrigin lowercases later.
 func partitionAddrs(addrs []string) (httpURLs, libp2pAddrs []string) {
 	for _, a := range addrs {
-		if strings.HasPrefix(a, "http://") || strings.HasPrefix(a, "https://") {
+		lower := strings.ToLower(a)
+		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
 			httpURLs = append(httpURLs, a)
 		} else {
 			libp2pAddrs = append(libp2pAddrs, a)
@@ -79,8 +79,8 @@ func partitionAddrs(addrs []string) (httpURLs, libp2pAddrs []string) {
 }
 
 // verifyHTTPOwnership tries each submitted http endpoint until one serves a
-// valid ownership proof signed by the registration key.
-func (c *acmeWriter) verifyHTTPOwnership(ctx context.Context, keyID string, urls []string) error {
+// valid ownership proof signed by the registration key pub.
+func (c *acmeWriter) verifyHTTPOwnership(ctx context.Context, pub ed25519.PublicKey, keyID string, urls []string) error {
 	if !c.AllowPrivateAddrs && len(urls) > maxOwnershipURLs {
 		return fmt.Errorf("too many http addresses (%d > %d)", len(urls), maxOwnershipURLs)
 	}
@@ -91,7 +91,7 @@ func (c *acmeWriter) verifyHTTPOwnership(ctx context.Context, keyID string, urls
 			lastErr = err
 			continue
 		}
-		if err := c.fetchAndVerifyOwnership(ctx, keyID, o); err != nil {
+		if err := c.fetchAndVerifyOwnership(ctx, pub, keyID, o); err != nil {
 			lastErr = err
 			continue
 		}
@@ -103,64 +103,73 @@ func (c *acmeWriter) verifyHTTPOwnership(ctx context.Context, keyID string, urls
 	return lastErr
 }
 
-func (c *acmeWriter) fetchAndVerifyOwnership(ctx context.Context, keyID string, o client.HTTPOrigin) error {
-	if !c.AllowPrivateAddrs && o.Port != "80" && o.Port != "443" {
-		return fmt.Errorf("ownership fetch port %s not allowed", o.Port)
-	}
-
-	ip, err := c.resolvePinnedIP(ctx, o.Host)
+// fetchAndVerifyOwnership fetches and checks the proof at o. Any port is
+// allowed on purpose: a NATed node forwards an arbitrary port via UPnP or
+// router config, and the libp2p dialback accepts arbitrary ports too. Abuse
+// control rests on the public-IP vetting and the per-IP denylist, not the
+// port.
+func (c *acmeWriter) fetchAndVerifyOwnership(ctx context.Context, pub ed25519.PublicKey, keyID string, o client.HTTPOrigin) error {
+	ips, err := c.resolvePinnedIPs(ctx, o.Host)
 	if err != nil {
 		return err
 	}
-	if mgr := denylist.GetManager(); mgr != nil {
-		if denied, res := mgr.Check(ip); denied {
-			return fmt.Errorf("endpoint IP %s blocked by %s", ip, res.Name)
+	var lastErr error
+	for _, ip := range ips {
+		if mgr := denylist.GetManager(); mgr != nil {
+			if denied, res := mgr.Check(ip); denied {
+				lastErr = fmt.Errorf("endpoint IP %s blocked by %s", ip, res.Name)
+				continue
+			}
 		}
+		proof, err := fetchOwnershipProof(ctx, o, ip, keyID)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		// A fetched proof is authoritative: verify it under the registration
+		// key (never a key the proof itself names) and stop either way.
+		return ownership.Verify(string(proof), pub, o.Origin, time.Now())
 	}
-
-	// The proof must verify under the registration key, never a key the proof
-	// itself names.
-	regPub, err := httpsig.DecodeDIDKey(keyID)
-	if err != nil {
-		return err
-	}
-	raw, err := regPub.Raw()
-	if err != nil {
-		return fmt.Errorf("reading registration key: %w", err)
-	}
-
-	proof, err := fetchOwnershipProof(ctx, o, ip, keyID)
-	if err != nil {
-		return err
-	}
-	return ownership.Verify(string(proof), ed25519.PublicKey(raw), o.Origin, time.Now())
+	return lastErr
 }
 
-// resolvePinnedIP resolves host to a single vettable public IP to pin the fetch
-// to. A literal IP is used directly. Vetting is skipped when AllowPrivateAddrs.
-func (c *acmeWriter) resolvePinnedIP(ctx context.Context, host string) (netip.Addr, error) {
+// resolvePinnedIPs resolves host to at most one vettable public IP per address
+// family to pin fetches to, so one stale or unreachable record (say a dead
+// AAAA) cannot sink the proof when the other family works. A literal IP is
+// used directly. Vetting is skipped when AllowPrivateAddrs.
+func (c *acmeWriter) resolvePinnedIPs(ctx context.Context, host string) ([]netip.Addr, error) {
 	if ip, err := netip.ParseAddr(host); err == nil {
 		if !c.AllowPrivateAddrs {
 			if err := vetDestIP(ip); err != nil {
-				return netip.Addr{}, err
+				return nil, err
 			}
 		}
-		return ip.Unmap(), nil
+		return []netip.Addr{ip.Unmap()}, nil
 	}
 	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
-		return netip.Addr{}, fmt.Errorf("resolving %s: %w", host, err)
+		return nil, fmt.Errorf("resolving %s: %w", host, err)
 	}
+	var picked []netip.Addr
+	var have4, have6 bool
 	for _, ip := range ips {
 		ip = ip.Unmap()
-		if c.AllowPrivateAddrs {
-			return ip, nil
+		if !c.AllowPrivateAddrs && vetDestIP(ip) != nil {
+			continue
 		}
-		if vetDestIP(ip) == nil {
-			return ip, nil
+		if ip.Is4() && !have4 {
+			picked = append(picked, ip)
+			have4 = true
+		}
+		if !ip.Is4() && !have6 {
+			picked = append(picked, ip)
+			have6 = true
 		}
 	}
-	return netip.Addr{}, fmt.Errorf("no public IP for %s", host)
+	if len(picked) == 0 {
+		return nil, fmt.Errorf("no public IP for %s", host)
+	}
+	return picked, nil
 }
 
 // fetchOwnershipProof GETs the well-known proof, pinning the connection to ip so

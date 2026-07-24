@@ -104,7 +104,7 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 	// Prove the key controls a real, reachable endpoint: the http-ownership
 	// proof (no libp2p) when an http(s) address is given, else the libp2p
 	// dialback.
-	mode, err := c.verifyReachable(r.Context(), verified.keyID, peerID, typedBody.Addresses, r.Header.Get("User-Agent"))
+	mode, err := c.verifyReachable(r.Context(), verified, typedBody.Addresses, r.Header.Get("User-Agent"))
 	if err != nil {
 		log.Debugf("v2: address verification failed for %s: %v", peerID, err)
 		writeProblem(w, http.StatusUnprocessableEntity, "verification-failed", "no submitted address could be verified")

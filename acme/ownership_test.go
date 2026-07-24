@@ -2,6 +2,7 @@ package acme
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -15,6 +16,14 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/stretchr/testify/require"
 )
+
+// ed25519Pub returns priv's public key in the form verifyHTTPOwnership takes.
+func ed25519Pub(t *testing.T, priv crypto.PrivKey) ed25519.PublicKey {
+	t.Helper()
+	raw, err := priv.GetPublic().Raw()
+	require.NoError(t, err)
+	return ed25519.PublicKey(raw)
+}
 
 // newProofServer starts a loopback HTTP server that serves priv's ownership
 // proof for its own origin, and returns the server plus the signer's did:key.
@@ -41,7 +50,7 @@ func TestHTTPOwnershipVerify(t *testing.T) {
 	c := newTestWriter() // AllowPrivateAddrs=true: loopback + non-standard port
 
 	t.Run("valid proof verifies", func(t *testing.T) {
-		require.NoError(t, c.verifyHTTPOwnership(t.Context(), did, []string{srv.URL}))
+		require.NoError(t, c.verifyHTTPOwnership(t.Context(), ed25519Pub(t, priv), did, []string{srv.URL}))
 	})
 
 	t.Run("wrong registration key fails", func(t *testing.T) {
@@ -49,15 +58,21 @@ func TestHTTPOwnershipVerify(t *testing.T) {
 		require.NoError(t, err)
 		otherDID, err := httpsig.EncodeDIDKey(other.GetPublic())
 		require.NoError(t, err)
-		// The endpoint serves priv's proof; verifying it as otherDID must fail
+		// The endpoint serves priv's proof; verifying it as other must fail
 		// (the served path is priv's did:key, so this 404s or key-mismatches).
-		require.Error(t, c.verifyHTTPOwnership(t.Context(), otherDID, []string{srv.URL}))
+		require.Error(t, c.verifyHTTPOwnership(t.Context(), ed25519Pub(t, other), otherDID, []string{srv.URL}))
 	})
 
 	t.Run("no proof served fails", func(t *testing.T) {
 		bare := httptest.NewServer(http.NotFoundHandler())
 		t.Cleanup(bare.Close)
-		require.Error(t, c.verifyHTTPOwnership(t.Context(), did, []string{bare.URL}))
+		require.Error(t, c.verifyHTTPOwnership(t.Context(), ed25519Pub(t, priv), did, []string{bare.URL}))
+	})
+
+	t.Run("redirect is not followed", func(t *testing.T) {
+		redirecting := httptest.NewServer(http.RedirectHandler(srv.URL, http.StatusMovedPermanently))
+		t.Cleanup(redirecting.Close)
+		require.Error(t, c.verifyHTTPOwnership(t.Context(), ed25519Pub(t, priv), did, []string{redirecting.URL}))
 	})
 }
 
@@ -77,7 +92,7 @@ func TestHTTPOwnershipSelfSignedTLS(t *testing.T) {
 	require.NoError(t, err)
 
 	c := newTestWriter()
-	require.NoError(t, c.verifyHTTPOwnership(t.Context(), did, []string{srv.URL}))
+	require.NoError(t, c.verifyHTTPOwnership(t.Context(), ed25519Pub(t, priv), did, []string{srv.URL}))
 }
 
 func TestV2HTTPOwnershipEndToEnd(t *testing.T) {
@@ -159,5 +174,5 @@ func TestHTTPOwnershipIPv6Literal(t *testing.T) {
 	require.Contains(t, o.Origin, "[::1]")
 
 	c := newTestWriter()
-	require.NoError(t, c.verifyHTTPOwnership(t.Context(), did, []string{srv.URL}))
+	require.NoError(t, c.verifyHTTPOwnership(t.Context(), ed25519Pub(t, priv), did, []string{srv.URL}))
 }

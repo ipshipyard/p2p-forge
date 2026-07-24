@@ -22,6 +22,11 @@ const (
 	backdate      = time.Minute // small backdate of iat to tolerate verifier skew
 )
 
+// proofType is the explicit JWT type (RFC 8725 section 3.11). The same Ed25519
+// identity key signs other artifacts, and some of those are JWTs too; typing
+// the header stops any of them from passing as an ownership proof.
+const proofType = "p2p-forge-ownership+jwt"
+
 // claims is the proof payload: the standard registered claims plus the origin
 // the key controls.
 type claims struct {
@@ -30,18 +35,21 @@ type claims struct {
 }
 
 // Sign returns a compact EdDSA JWT proving priv controls origin, valid for ttl
-// (clamped to MaxWindow).
+// (clamped to MaxWindow). iat is backdated slightly to tolerate verifier clock
+// skew, and exp counts from the backdated iat, so exp-iat never exceeds ttl.
 func Sign(priv ed25519.PrivateKey, origin string, now time.Time, ttl time.Duration) (string, error) {
 	if ttl <= 0 || ttl > MaxWindow {
 		ttl = DefaultWindow
 	}
+	iat := now.Add(-backdate)
 	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims{
 		Origin: origin,
 		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt:  jwt.NewNumericDate(now.Add(-backdate)),
-			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+			IssuedAt:  jwt.NewNumericDate(iat),
+			ExpiresAt: jwt.NewNumericDate(iat.Add(ttl)),
 		},
 	})
+	token.Header["typ"] = proofType
 	s, err := token.SignedString(priv)
 	if err != nil {
 		return "", fmt.Errorf("signing ownership proof: %w", err)
@@ -61,15 +69,19 @@ func Verify(token string, pub ed25519.PublicKey, expectedOrigin string, now time
 		jwt.WithLeeway(clockSkew),
 		jwt.WithTimeFunc(func() time.Time { return now }),
 	)
-	if _, err := parser.ParseWithClaims(token, &c, func(*jwt.Token) (any, error) {
+	tok, err := parser.ParseWithClaims(token, &c, func(*jwt.Token) (any, error) {
 		return pub, nil
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("ownership proof invalid: %w", err)
+	}
+	if typ, _ := tok.Header["typ"].(string); typ != proofType {
+		return fmt.Errorf("ownership proof typ %q is not %q", typ, proofType)
 	}
 	if c.IssuedAt == nil || c.ExpiresAt == nil {
 		return fmt.Errorf("ownership proof missing iat/exp")
 	}
-	if c.ExpiresAt.Sub(c.IssuedAt.Time) > MaxWindow+backdate {
+	if c.ExpiresAt.Sub(c.IssuedAt.Time) > MaxWindow {
 		return fmt.Errorf("ownership proof window exceeds %s", MaxWindow)
 	}
 	if c.Origin != expectedOrigin {

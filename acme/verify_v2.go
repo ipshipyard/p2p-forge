@@ -18,7 +18,8 @@ import (
 // v2Verified is the authenticated result of a valid registration request.
 type v2Verified struct {
 	peerID peer.ID
-	keyID  string // the did:key that signed
+	keyID  string            // the did:key that signed
+	pub    ed25519.PublicKey // the key inside keyID, decoded once
 }
 
 // errMalformed marks a request that does not conform to the /v2 signing
@@ -124,7 +125,7 @@ func verifyV2Request(r *http.Request, body []byte, domain string) (*v2Verified, 
 	if err != nil {
 		return nil, fmt.Errorf("deriving peer ID: %w", err)
 	}
-	return &v2Verified{peerID: peerID, keyID: *details.KeyID}, nil
+	return &v2Verified{peerID: peerID, keyID: *details.KeyID, pub: ed25519.PublicKey(raw)}, nil
 }
 
 // enforceV2Envelope rejects signature headers that stray from the closed /v2
