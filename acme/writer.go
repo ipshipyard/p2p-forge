@@ -227,7 +227,6 @@ func (c *acmeWriter) OnStartup() error {
 
 	// v2 registration API: RFC 9421-signed, no libp2p PeerID-auth handshake.
 	mux.Handle("POST "+registrationV2ApiPath, std.Handler(registrationV2ApiPath, httpMetricsMiddleware, http.HandlerFunc(c.handleV2Challenge)))
-	mux.Handle("GET "+profileV2ApiPath, std.Handler(profileV2ApiPath, httpMetricsMiddleware, http.HandlerFunc(c.handleV2Profile)))
 	mux.HandleFunc("GET "+healthV2ApiPath, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})

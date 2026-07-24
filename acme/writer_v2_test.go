@@ -302,14 +302,3 @@ func TestV2ChallengeHandlerRejects(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 }
-
-func TestV2ProfileHandler(t *testing.T) {
-	rec := httptest.NewRecorder()
-	newTestWriter().handleV2Profile(rec, httptest.NewRequest(http.MethodGet, "/v2", nil))
-	require.Equal(t, http.StatusOK, rec.Code)
-
-	var p v2Profile
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &p))
-	require.Equal(t, httpsig.RegistrationTag, p.SignatureTag)
-	require.Equal(t, registrationV2ApiPath, p.Endpoint)
-}

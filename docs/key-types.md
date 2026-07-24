@@ -15,8 +15,8 @@ registry rather than invented here:
    self-describing: the key's type is a
    [multicodec](https://github.com/multiformats/multicodec) prefix on the raw
    public key. Adding a type means accepting its multicodec when decoding the
-   `did:key`. Old clients are unaffected, and the `GET /v2` descriptor advertises
-   which key types an instance accepts, so a client can discover support.
+   `did:key`. Old clients are unaffected. A request with a key type the server
+   does not accept fails with a `malformed-signature` error.
 2. **Algorithm.** The forge MUST derive the signature algorithm from the key's
    multicodec, never from a client-supplied value. RFC 9421 allows an explicit
    `alg` parameter but treats the key material as authoritative; this profile

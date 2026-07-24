@@ -45,7 +45,6 @@ name and the cert name, which `/v2` shares with `/v1`.
 | --- | --- | --- |
 | `POST` | `/v2/_acme-challenge` | Set the DNS-01 TXT value for the peer derived from the signing key. |
 | `GET` | `/v2/health` | Liveness. Always `204`. |
-| `GET` | `/v2` | Static JSON descriptor of this profile (accepted keys, covered components, limits). |
 
 ## Request signing
 

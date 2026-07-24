@@ -12,7 +12,6 @@ import (
 
 	"github.com/ipfs/go-datastore"
 	"github.com/ipshipyard/p2p-forge/client"
-	"github.com/ipshipyard/p2p-forge/internal/httpsig"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multibase"
 )
@@ -21,7 +20,6 @@ import (
 const (
 	registrationV2ApiPath = "/v2/_acme-challenge"
 	healthV2ApiPath       = "/v2/health"
-	profileV2ApiPath      = "/v2"
 )
 
 // maxV2BodySize bounds the registration request body.
@@ -130,21 +128,6 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleV2Profile serves a static descriptor so a generic signer can discover
-// the required covered components and limits without reading source.
-func (c *acmeWriter) handleV2Profile(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, v2Profile{
-		Endpoint:          registrationV2ApiPath,
-		KeyTypes:          []string{"did:key (Ed25519)"},
-		CoveredComponents: []string{"@method", "@authority", "@path", "content-type", "content-digest"},
-		SignatureParams:   []string{"created", "expires", "nonce", "keyid", "tag"},
-		SignatureTag:      httpsig.RegistrationTag,
-		MaxBodyBytes:      maxV2BodySize,
-		MaxSignatureAgeS:  int(httpsig.MaxSignatureLifetime / time.Second),
-		ContentDigest:     "sha-256 (RFC 9530), required, covered by the signature",
-	})
-}
-
 type v2Response struct {
 	// DID is the did:key that registered (libp2p-agnostic; no raw peerid).
 	DID string `json:"did"`
@@ -156,17 +139,6 @@ type v2Response struct {
 
 type v2Verification struct {
 	Mode string `json:"mode"`
-}
-
-type v2Profile struct {
-	Endpoint          string   `json:"endpoint"`
-	KeyTypes          []string `json:"keyTypes"`
-	CoveredComponents []string `json:"coveredComponents"`
-	SignatureParams   []string `json:"signatureParams"`
-	SignatureTag      string   `json:"signatureTag"`
-	MaxBodyBytes      int      `json:"maxBodyBytes"`
-	MaxSignatureAgeS  int      `json:"maxSignatureAgeSeconds"`
-	ContentDigest     string   `json:"contentDigest"`
 }
 
 // decodeV2Body parses the registration body, rejecting unknown fields and any
