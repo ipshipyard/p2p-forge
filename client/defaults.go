@@ -17,8 +17,10 @@ const (
 	// secret that limits access to registration endpoint
 	ForgeAuthEnv = "FORGE_ACCESS_TOKEN"
 
-	// ForgeAuthHeader optional HTTP header that client should include when
-	// talking to a limited access registration endpoint
+	// ForgeAuthHeader carries the optional access token for the registration
+	// endpoints. It is not part of the registration API spec: it is an extra
+	// header the p2p-forge implementation supports so an operator can run a
+	// limited rollout or a test instance before opening it up fully.
 	ForgeAuthHeader = "Forge-Authorization"
 
 	DefaultStorageLocation = "p2p-forge-certs"

@@ -44,9 +44,13 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cheapest gate first: optional shared-secret access token.
+	// Cheapest gate first: the optional Forge-Authorization access token. Not
+	// part of the /v2 spec: an extra this implementation supports so an
+	// operator can run a limited rollout or a test instance before opening it
+	// up. See client.ForgeAuthHeader. The response therefore carries no
+	// spec-defined problem type.
 	if c.forgeAuthKey != "" && !constantTimeEqual(r.Header.Get(client.ForgeAuthHeader), c.forgeAuthKey) {
-		writeProblem(w, http.StatusForbidden, "forbidden", fmt.Sprintf("missing or invalid %s header", client.ForgeAuthHeader))
+		writeProblem(w, http.StatusForbidden, "", fmt.Sprintf("missing or invalid %s header", client.ForgeAuthHeader))
 		return
 	}
 
@@ -174,12 +178,18 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // type slug; the Errors section of the linked document lists them all.
 const problemTypeBase = "https://github.com/ipshipyard/p2p-forge/blob/main/docs/registration-v2.md#"
 
-// writeProblem emits an RFC 9457 problem+json response.
+// writeProblem emits an RFC 9457 problem+json response. An empty problemType
+// becomes the generic "about:blank": the status code alone describes the
+// problem. Used for responses that are not part of the /v2 spec.
 func writeProblem(w http.ResponseWriter, status int, problemType, detail string) {
+	typeURI := "about:blank"
+	if problemType != "" {
+		typeURI = problemTypeBase + problemType
+	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"type":   problemTypeBase + problemType,
+		"type":   typeURI,
 		"title":  http.StatusText(status),
 		"status": status,
 		"detail": detail,

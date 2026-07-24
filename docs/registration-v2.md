@@ -242,13 +242,14 @@ classes apart SHOULD match on that fragment.
 | `400` | `malformed-value` | `value` is not unpadded base64url of a 32-byte SHA-256 digest. |
 | `400` | `malformed-signature` | The request does not conform to this profile: unparseable signature headers, a bad `did:key`, a nonce under 128 bits, a missing `created` or `expires`, `expires - created` over 300 seconds, or a `Content-Digest` that is malformed or does not match the body. |
 | `401` | `signature-invalid` | Signature verification failed, a required component is not covered, the clock window is violated, or `@authority` is not the registration domain. |
-| `403` | `forbidden` | Missing or wrong `Forge-Authorization` where the operator requires one. |
 | `403` | `denylisted` | The client IP or a submitted address is denylisted. |
 | `413` | `body-too-large` | The body exceeds 8 KiB. |
 | `422` | `verification-failed` | No submitted address could be verified. |
 | `500` | `misconfigured`, `storage-error` | Server-side failure; safe to retry later. |
 
-A fronting proxy may add others, such as `429` when it rate-limits.
+A fronting proxy or implementation-specific access control may add statuses
+outside this table, such as `429` when rate limited or `403` when access is
+denied.
 
 ## Anti-abuse
 

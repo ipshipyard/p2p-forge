@@ -267,18 +267,19 @@ func TestV2ChallengeHandlerRejects(t *testing.T) {
 		c := newTestWriter()
 		c.forgeAuthKey = "test-secret"
 
-		missing := httptest.NewRequest(http.MethodPost, "https://"+v2TestDomain+"/v2/_acme-challenge", nil)
-		missing.Host = v2TestDomain
-		rec := httptest.NewRecorder()
-		c.handleV2Challenge(rec, missing)
-		require.Equal(t, http.StatusForbidden, rec.Code, "missing token")
+		post := func(token string) *httptest.ResponseRecorder {
+			r := httptest.NewRequest(http.MethodPost, "https://"+v2TestDomain+"/v2/_acme-challenge", nil)
+			r.Host = v2TestDomain
+			if token != "" {
+				r.Header.Set(client.ForgeAuthHeader, token)
+			}
+			rec := httptest.NewRecorder()
+			c.handleV2Challenge(rec, r)
+			return rec
+		}
 
-		wrong := httptest.NewRequest(http.MethodPost, "https://"+v2TestDomain+"/v2/_acme-challenge", nil)
-		wrong.Host = v2TestDomain
-		wrong.Header.Set(client.ForgeAuthHeader, "not-the-secret")
-		rec = httptest.NewRecorder()
-		c.handleV2Challenge(rec, wrong)
-		require.Equal(t, http.StatusForbidden, rec.Code, "wrong token")
+		require.Equal(t, http.StatusForbidden, post("").Code, "missing token")
+		require.Equal(t, http.StatusForbidden, post("not-the-secret").Code, "wrong token")
 	})
 
 	t.Run("wrong authority", func(t *testing.T) {
