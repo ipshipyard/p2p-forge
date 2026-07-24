@@ -22,8 +22,14 @@ func clientIPs(r *http.Request, trustedHeader string) []netip.Addr {
 
 	if trustedHeader != "" {
 		if v := strings.TrimSpace(r.Header.Get(trustedHeader)); v != "" {
-			if ip, err := netip.ParseAddr(v); err == nil {
+			if ip, ok := parseHeaderIP(v); ok {
 				ips = append(ips, ip)
+			} else {
+				// The proxy is expected to set a single IP here. A value we
+				// cannot parse means the denylist would silently fall back to
+				// the proxy's own address, so make the misconfiguration
+				// visible instead.
+				log.Warningf("%s header value %q is not an IP; ignoring it for the denylist", trustedHeader, v)
 			}
 		}
 	}
@@ -37,6 +43,18 @@ func clientIPs(r *http.Request, trustedHeader string) []netip.Addr {
 	}
 
 	return ips
+}
+
+// parseHeaderIP parses a proxy-set client-IP header value, accepting either a
+// bare IP or an "ip:port" pair (some proxies append the source port).
+func parseHeaderIP(v string) (netip.Addr, bool) {
+	if ip, err := netip.ParseAddr(v); err == nil {
+		return ip, true
+	}
+	if ap, err := netip.ParseAddrPort(v); err == nil {
+		return ap.Addr(), true
+	}
+	return netip.Addr{}, false
 }
 
 // multiaddrsToIPs extracts IP addresses from multiaddr strings.

@@ -324,7 +324,10 @@ full syntax):
   the submitted addresses. Never enable it on a public instance.
 - `client-ip-header <name>` names the header the fronting proxy sets with the
   real client IP (for example `CF-Connecting-IP` behind Cloudflare), used for
-  the denylist. Without it, only the direct connection address is trusted.
+  the denylist. The value may be a bare IP or `ip:port`. It MUST be a
+  single-value header the proxy controls; `X-Forwarded-For` is refused at
+  startup, because a client can prepend to it and dodge the denylist. Without
+  this option, only the direct connection address is trusted.
 
 ## Adding a key type
 

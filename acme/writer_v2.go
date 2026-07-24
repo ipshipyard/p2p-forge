@@ -54,6 +54,14 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject a denylisted caller before any signature or dialback work. The
+	// client IP needs neither the body nor the signature, and anyone can mint
+	// a key, so nothing is leaked by answering here.
+	if blocked, reason := denylistClientIPs(clientIPs(r, c.ClientIPHeader)); blocked {
+		writeProblem(w, http.StatusForbidden, "denylisted", reason)
+		return
+	}
+
 	// The signature covers the Content-Type header; this pins its value.
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
 		writeProblem(w, http.StatusBadRequest, "malformed-body", "Content-Type must be application/json")
@@ -96,7 +104,7 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if blocked, reason := checkDenylist(clientIPs(r, c.ClientIPHeader), typedBody.Addresses); blocked {
+	if blocked, reason := denylistAddresses(typedBody.Addresses); blocked {
 		writeProblem(w, http.StatusForbidden, "denylisted", reason)
 		return
 	}

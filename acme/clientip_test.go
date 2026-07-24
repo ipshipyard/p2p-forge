@@ -55,6 +55,20 @@ func TestClientIPs(t *testing.T) {
 			expected:      []netip.Addr{netip.MustParseAddr("1.2.3.4")},
 		},
 		{
+			name:          "trusted header with ip:port is accepted",
+			trustedHeader: trustedHeader,
+			headers:       map[string]string{trustedHeader: "1.2.3.4:5678"},
+			remoteAddr:    "9.9.9.9:80",
+			expected:      []netip.Addr{netip.MustParseAddr("1.2.3.4"), netip.MustParseAddr("9.9.9.9")},
+		},
+		{
+			name:          "trusted header with bracketed ipv6 and port is accepted",
+			trustedHeader: trustedHeader,
+			headers:       map[string]string{trustedHeader: "[2001:db8::1]:443"},
+			remoteAddr:    "9.9.9.9:80",
+			expected:      []netip.Addr{netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("9.9.9.9")},
+		},
+		{
 			name:       "empty",
 			remoteAddr: "",
 			expected:   nil,

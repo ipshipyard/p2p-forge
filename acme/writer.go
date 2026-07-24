@@ -293,16 +293,23 @@ type requestBody struct {
 	Addresses []string `json:"addresses"`
 }
 
-// checkDenylist checks client IPs and multiaddr IPs against denylist.
-// Returns (blocked, reason) where reason describes which IP was blocked.
-// Blocks if ANY IP is denied.
+// checkDenylist checks the client IPs and the submitted multiaddr IPs against
+// the denylist, blocking if any is denied. Returns (blocked, reason).
 func checkDenylist(clientIPs []netip.Addr, multiaddrs []string) (bool, string) {
+	if blocked, reason := denylistClientIPs(clientIPs); blocked {
+		return true, reason
+	}
+	return denylistAddresses(multiaddrs)
+}
+
+// denylistClientIPs checks only the client IPs (the trusted header and the
+// direct connection address), so a denylisted caller can be rejected before
+// any signature or dialback work.
+func denylistClientIPs(clientIPs []netip.Addr) (bool, string) {
 	mgr := denylist.GetManager()
 	if mgr == nil {
 		return false, ""
 	}
-
-	// Check all client IPs (XFF and RemoteAddr)
 	for _, client := range clientIPs {
 		if !client.IsValid() {
 			continue
@@ -311,14 +318,21 @@ func checkDenylist(clientIPs []netip.Addr, multiaddrs []string) (bool, string) {
 			return true, fmt.Sprintf("client IP %s blocked by %s", client, result.Name)
 		}
 	}
+	return false, ""
+}
 
-	// Check multiaddr IPs
+// denylistAddresses checks the IPs carried in the submitted multiaddrs. It does
+// not see behind a /dns name; testAddresses re-checks resolved IPs.
+func denylistAddresses(multiaddrs []string) (bool, string) {
+	mgr := denylist.GetManager()
+	if mgr == nil {
+		return false, ""
+	}
 	for _, ip := range multiaddrsToIPs(multiaddrs) {
 		if denied, result := mgr.Check(ip); denied {
 			return true, fmt.Sprintf("multiaddr IP %s blocked by %s", ip, result.Name)
 		}
 	}
-
 	return false, ""
 }
 
