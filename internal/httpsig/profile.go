@@ -15,7 +15,7 @@ const (
 	SigLabel = "sig1"
 	// RegistrationTag domain-separates a registration signature from any other
 	// RFC 9421 use.
-	RegistrationTag = "p2p-forge-reg"
+	RegistrationTag = "autotls-reg"
 
 	// MaxSignatureLifetime bounds expires-created. No extra grace for client
 	// clock skew is needed: a skewed clock shifts created and expires by the

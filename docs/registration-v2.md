@@ -83,7 +83,7 @@ with these signature parameters:
 | `expires` | Unix seconds when the signature stops being valid. `expires - created` MUST be `<= 300`. |
 | `nonce` | At least 128 random bits, unpadded base64url, fresh for every signature. |
 | `keyid` | The `did:key` above. |
-| `tag` | `p2p-forge-reg`. |
+| `tag` | `autotls-reg`. |
 
 The server enforces this grammar as written: it compares the covered-components
 list against the exact serialization above (same set, same order, no
@@ -117,7 +117,7 @@ trailing newline. For a POST to `registration.libp2p.direct` it looks like:
 "@path": /v2/_acme-challenge
 "content-type": application/json
 "content-digest": sha-256=:<base64>:
-"@signature-params": ("@method" "@authority" "@path" "content-type" "content-digest");created=1700000000;expires=1700000060;nonce="dGVzdG5vbmNlMTIzNDU2Nw";keyid="did:key:z6Mk...";tag="p2p-forge-reg"
+"@signature-params": ("@method" "@authority" "@path" "content-type" "content-digest");created=1700000000;expires=1700000060;nonce="dGVzdG5vbmNlMTIzNDU2Nw";keyid="did:key:z6Mk...";tag="autotls-reg"
 ```
 
 The `Signature-Input` and `Signature` headers MUST each appear exactly once and
@@ -125,7 +125,7 @@ carry exactly one signature, labeled `sig1`; the server rejects any other label
 and any additional signature:
 
 ```
-Signature-Input: sig1=("@method" "@authority" "@path" "content-type" "content-digest");created=1700000000;expires=1700000060;nonce="dGVzdG5vbmNlMTIzNDU2Nw";keyid="did:key:z6Mk...";tag="p2p-forge-reg"
+Signature-Input: sig1=("@method" "@authority" "@path" "content-type" "content-digest");created=1700000000;expires=1700000060;nonce="dGVzdG5vbmNlMTIzNDU2Nw";keyid="did:key:z6Mk...";tag="autotls-reg"
 Signature: sig1=:<base64 of the Ed25519 signature over the base>:
 ```
 
@@ -199,17 +199,17 @@ The node MUST serve, at the key-scoped path below, a compact EdDSA JWT
 origin:
 
 ```
-GET http(s)://<host>[:<port>]/.well-known/p2p-forge/<did:key>
+GET http(s)://<host>[:<port>]/.well-known/autotls/<did:key>
 ```
 
-The `p2p-forge` well-known path suffix may be registered in the IANA registry
+The `autotls` well-known path suffix may be registered in the IANA registry
 ([RFC 8615](https://www.rfc-editor.org/rfc/rfc8615)) in the future, if this
 API sees enough adoption.
 
 The response body is the JWT (`Content-Type: application/jwt`), signed with the
 node's Ed25519 key. The node signs it once and reuses it until close to expiry,
 so it is cacheable and can be signed offline. The JWT header MUST carry
-`alg: EdDSA` and `typ: p2p-forge-ownership+jwt` (explicit typing per
+`alg: EdDSA` and `typ: autotls-ownership+jwt` (explicit typing per
 [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725), so no other JWT signed by
 the same key can pass as an ownership proof). The payload carries these claims:
 

@@ -25,7 +25,7 @@ const (
 // proofType is the explicit JWT type (RFC 8725 section 3.11). The same Ed25519
 // identity key signs other artifacts, and some of those are JWTs too; typing
 // the header stops any of them from passing as an ownership proof.
-const proofType = "p2p-forge-ownership+jwt"
+const proofType = "autotls-ownership+jwt"
 
 // claims is the proof payload: the standard registered claims plus the origin
 // the key controls.

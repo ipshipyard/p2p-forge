@@ -20,7 +20,7 @@ import (
 // WellKnownProofPath is the path prefix where a node serves its ownership
 // proof; the full path is this prefix followed by the node's did:key. The path
 // is keyed by did:key (not a peerid) to keep the v2 surface libp2p-agnostic.
-const WellKnownProofPath = "/.well-known/p2p-forge/"
+const WellKnownProofPath = "/.well-known/autotls/"
 
 // HTTPOrigin is the canonical form of an http(s) endpoint used by the ownership
 // proof: an origin string the proof binds, plus the pieces needed to connect.
