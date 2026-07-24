@@ -151,16 +151,23 @@ to prove reachability (below).
 
 ### Success
 
-`200` with:
+`200` with a body that is informational: a client needs none of it to proceed.
 
 ```json
 {
   "did": "did:key:z6Mk...",
   "name": "*.<peerid-b36>.libp2p.direct",
-  "verification": {"mode": "http-ownership"},
-  "ttl": 3600
+  "verification": "http-ownership",
+  "expiresIn": 3600
 }
 ```
+
+| Field | Meaning |
+| --- | --- |
+| `did` | The `did:key` that registered, echoed back. |
+| `name` | The wildcard cert name the peer can now get. |
+| `verification` | Which check passed: `http-ownership` or `libp2p-dialback`. |
+| `expiresIn` | Seconds from now until the forge expires the stored challenge value. This is not the DNS TTL of the TXT record. This is how long we serve the value. |
 
 ## Proving reachability
 
@@ -278,21 +285,22 @@ non-public targets, and MUST bound the dial with a timeout.
 ## Errors
 
 The server SHOULD return [problem+json (RFC 9457)](https://www.rfc-editor.org/rfc/rfc9457)
-and MUST use a status consistent with the table below. Each error class carries
-a stable fragment at the end of its `type` URI; a client that needs to tell
-classes apart SHOULD match on that fragment.
+and MUST use a status consistent with the table below. Each error class has a
+stable `type` URI ending in the fragment shown, which anchors to that row. A
+client that needs to tell classes apart SHOULD match on the whole `type` URI
+(the fragment alone is enough in practice).
 
 | Status | `type` fragment | When |
 | --- | --- | --- |
-| `400` | `unexpected-query` | The request carries a query string. |
-| `400` | `malformed-body` | The `Content-Type` is not `application/json`, the body is not the JSON object above, has unknown fields, or has trailing data. |
-| `400` | `malformed-value` | `value` is not unpadded base64url of a 32-byte SHA-256 digest. |
-| `400` | `malformed-signature` | The request does not conform to this profile: unparseable signature headers, a label other than `sig1`, covered components other than the exact list above, an unknown signature parameter, an `alg` other than `ed25519`, a bad `did:key`, a `nonce` that is not unpadded base64url of at least 128 bits, a missing `created` or `expires`, `expires - created` over 300 seconds, or a `Content-Digest` that is malformed or does not match the body. |
-| `401` | `signature-invalid` | Signature verification failed, a required component is not covered, the clock window is violated, or `@authority` is not the registration domain. |
-| `403` | `denylisted` | The client IP or a submitted address is denylisted. |
-| `413` | `body-too-large` | The body exceeds 8 KiB. |
-| `422` | `verification-failed` | No submitted address could be verified. |
-| `500` | `misconfigured`, `storage-error` | Server-side failure; safe to retry later. |
+| `400` | `unexpected-query`<a id="unexpected-query"></a> | The request carries a query string. |
+| `400` | `malformed-body`<a id="malformed-body"></a> | The `Content-Type` is not `application/json`, the body is not the JSON object above, has unknown fields, or has trailing data. |
+| `400` | `malformed-value`<a id="malformed-value"></a> | `value` is not unpadded base64url of a 32-byte SHA-256 digest. |
+| `400` | `malformed-signature`<a id="malformed-signature"></a> | The request does not conform to this profile: unparseable signature headers, a label other than `sig1`, covered components other than the exact list above, an unknown signature parameter, an `alg` other than `ed25519`, a bad `did:key`, a `nonce` that is not unpadded base64url of at least 128 bits, a missing `created` or `expires`, `expires - created` over 300 seconds, or a `Content-Digest` that is malformed or does not match the body. |
+| `401` | `signature-invalid`<a id="signature-invalid"></a> | Signature verification failed, a required component is not covered, the clock window is violated, or `@authority` is not the registration domain. |
+| `403` | `denylisted`<a id="denylisted"></a> | The client IP or a submitted address is denylisted. |
+| `413` | `body-too-large`<a id="body-too-large"></a> | The body exceeds 8 KiB. |
+| `422` | `verification-failed`<a id="verification-failed"></a> | No submitted address could be verified. |
+| `500` | `misconfigured`<a id="misconfigured"></a>, `storage-error`<a id="storage-error"></a> | Server-side failure; safe to retry later. |
 
 A fronting proxy or implementation-specific access control may add statuses
 outside this table, such as `429` when rate limited or `403` when access is

@@ -26,6 +26,10 @@ const (
 // maxV2BodySize bounds the registration request body.
 const maxV2BodySize = 8 << 10 // 8 KiB
 
+// challengeTTL is how long the forge retains a submitted DNS-01 challenge
+// value before it expires. Reported to the client as expiresIn.
+const challengeTTL = time.Hour
+
 // handleV2Challenge verifies an RFC 9421-signed registration and, on success,
 // stores the DNS-01 TXT value for the peer derived from the signing key. It
 // replaces the v1 libp2p PeerID-auth handshake with a single signed request.
@@ -119,7 +123,7 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := c.Datastore.PutWithTTL(r.Context(), datastore.NewKey(peerID.String()), []byte(typedBody.Value), time.Hour); err != nil {
+	if err := c.Datastore.PutWithTTL(r.Context(), datastore.NewKey(peerID.String()), []byte(typedBody.Value), challengeTTL); err != nil {
 		writeProblem(w, http.StatusInternalServerError, "storage-error", "failed to store challenge")
 		log.Errorf("v2: storing challenge for %s: %v", peerID, err)
 		return
@@ -128,22 +132,25 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v2Response{
 		DID:          verified.keyID,
 		Name:         certWildcard(peerID, c.ForgeDomain),
-		Verification: v2Verification{Mode: mode},
-		TTL:          int(time.Hour / time.Second),
+		Verification: mode,
+		ExpiresIn:    int(challengeTTL / time.Second),
 	})
 }
 
+// v2Response is the informational 200 body. A client needs none of it to
+// proceed; it is there for humans and for a client that wants to confirm what
+// the forge recorded.
 type v2Response struct {
 	// DID is the did:key that registered (libp2p-agnostic; no raw peerid).
 	DID string `json:"did"`
 	// Name is the wildcard cert name; peerid-b36 belongs to the DNS/cert layer.
-	Name         string         `json:"name"`
-	Verification v2Verification `json:"verification"`
-	TTL          int            `json:"ttl"`
-}
-
-type v2Verification struct {
-	Mode string `json:"mode"`
+	Name string `json:"name"`
+	// Verification is the mode that proved reachability: "http-ownership" or
+	// "libp2p-dialback".
+	Verification string `json:"verification"`
+	// ExpiresIn is how many seconds from now the forge keeps the submitted
+	// challenge value before it expires (not the DNS TTL of the TXT record).
+	ExpiresIn int `json:"expiresIn"`
 }
 
 // decodeV2Body parses the registration body, rejecting unknown fields and any

@@ -190,7 +190,7 @@ func TestV2ChallengeHandlerRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Equal(t, wantDID, resp.DID)
 	require.Contains(t, resp.Name, ".libp2p.direct")
-	require.Equal(t, "libp2p-dialback", resp.Verification.Mode)
+	require.Equal(t, "libp2p-dialback", resp.Verification)
 }
 
 func TestV2ChallengeHandlerRejects(t *testing.T) {
