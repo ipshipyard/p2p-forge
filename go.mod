@@ -9,6 +9,7 @@ require (
 	github.com/caddyserver/certmagic v0.25.3
 	github.com/coredns/caddy v1.1.4
 	github.com/coredns/coredns v1.14.3
+	github.com/dunglas/httpsfv v1.1.0
 	github.com/felixge/httpsnoop v1.0.4
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gaissmai/bart v0.28.0
@@ -64,7 +65,6 @@ require (
 	github.com/dgraph-io/badger/v4 v4.5.1 // indirect
 	github.com/dgraph-io/ristretto/v2 v2.1.0 // indirect
 	github.com/dgryski/go-farm v0.0.0-20240924180020-3414d57e47da // indirect
-	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/flynn/go-shlex v0.0.0-20150515145356-3f9db97f8568 // indirect
 	github.com/flynn/noise v1.1.0 // indirect

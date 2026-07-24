@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +65,7 @@ type v2SignOpts struct {
 	expiresIn   time.Duration // 0 means httpsig.MaxSignatureLifetime
 	nonce       string        // "" means a fresh 22-character nonce
 	keyID       string        // "" means the did:key of the signing key
+	components  []string      // nil means httpsig.RegistrationComponents
 }
 
 func signedV2RequestOpts(t *testing.T, priv crypto.PrivKey, value string, addrs []string, opts v2SignOpts) *http.Request {
@@ -105,7 +107,11 @@ func signedV2RequestOpts(t *testing.T, priv crypto.PrivKey, value string, addrs 
 		}
 		cfg = cfg.SetExpires(time.Now().Add(expiresIn).Unix())
 	}
-	signer, err := httpsign.NewEd25519Signer(ed25519.PrivateKey(raw), cfg, httpsign.Headers(httpsig.RegistrationComponents...))
+	components := opts.components
+	if components == nil {
+		components = httpsig.RegistrationComponents
+	}
+	signer, err := httpsign.NewEd25519Signer(ed25519.PrivateKey(raw), cfg, httpsign.Headers(components...))
 	require.NoError(t, err)
 	sigInput, sig, err := httpsign.SignRequest(httpsig.SigLabel, *signer, req)
 	require.NoError(t, err)
@@ -230,12 +236,82 @@ func TestV2ChallengeHandlerRejects(t *testing.T) {
 
 	t.Run("nonce below 128 bits", func(t *testing.T) {
 		h, priv := newRegistrantHost(t)
-		// 12 bytes encode to 16 base64url characters, under the 22 minimum.
+		// 12 bytes decode fine but fall short of the 16-byte minimum.
 		shortNonce := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 12))
 		req := signedV2RequestOpts(t, priv, value, addrStrings(h), v2SignOpts{nonce: shortNonce})
 		rec := httptest.NewRecorder()
 		newTestWriter().handleV2Challenge(rec, req)
 		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	})
+
+	t.Run("nonce not base64url", func(t *testing.T) {
+		h, priv := newRegistrantHost(t)
+		// 22 characters, but outside the unpadded base64url alphabet.
+		req := signedV2RequestOpts(t, priv, value, addrStrings(h), v2SignOpts{nonce: "!!!!!!!!!!!!!!!!!!!!!!"})
+		rec := httptest.NewRecorder()
+		newTestWriter().handleV2Challenge(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	})
+
+	t.Run("extra covered component", func(t *testing.T) {
+		h, priv := newRegistrantHost(t)
+		extra := append(append([]string{}, httpsig.RegistrationComponents...), "@scheme")
+		req := signedV2RequestOpts(t, priv, value, addrStrings(h), v2SignOpts{components: extra})
+		rec := httptest.NewRecorder()
+		newTestWriter().handleV2Challenge(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	})
+
+	t.Run("reordered covered components", func(t *testing.T) {
+		h, priv := newRegistrantHost(t)
+		reordered := append([]string{}, httpsig.RegistrationComponents...)
+		reordered[0], reordered[1] = reordered[1], reordered[0]
+		req := signedV2RequestOpts(t, priv, value, addrStrings(h), v2SignOpts{components: reordered})
+		rec := httptest.NewRecorder()
+		newTestWriter().handleV2Challenge(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	})
+
+	t.Run("missing covered component", func(t *testing.T) {
+		h, priv := newRegistrantHost(t)
+		// Dropping content-digest would unbind the body from the signature.
+		short := httpsig.RegistrationComponents[:len(httpsig.RegistrationComponents)-1]
+		req := signedV2RequestOpts(t, priv, value, addrStrings(h), v2SignOpts{components: short})
+		rec := httptest.NewRecorder()
+		newTestWriter().handleV2Challenge(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	})
+
+	t.Run("second signature label", func(t *testing.T) {
+		h, priv := newRegistrantHost(t)
+		req := signedV2Request(t, priv, value, addrStrings(h))
+		req.Header.Add("Signature-Input", `sig2=("@method");created=1700000000`)
+		req.Header.Add("Signature", "sig2=:AAAA:")
+		rec := httptest.NewRecorder()
+		newTestWriter().handleV2Challenge(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	})
+
+	t.Run("alg other than ed25519", func(t *testing.T) {
+		h, priv := newRegistrantHost(t)
+		req := signedV2Request(t, priv, value, addrStrings(h))
+		// The test signer emits alg="ed25519"; swap the value in place.
+		si := strings.Replace(req.Header.Get("Signature-Input"), `alg="ed25519"`, `alg="rsa-v1_5-sha256"`, 1)
+		require.Contains(t, si, `alg="rsa-v1_5-sha256"`)
+		req.Header.Set("Signature-Input", si)
+		rec := httptest.NewRecorder()
+		newTestWriter().handleV2Challenge(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	})
+
+	t.Run("wrong content type", func(t *testing.T) {
+		h, priv := newRegistrantHost(t)
+		req := signedV2Request(t, priv, value, addrStrings(h))
+		req.Header.Set("Content-Type", "text/plain")
+		rec := httptest.NewRecorder()
+		newTestWriter().handleV2Challenge(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		require.Contains(t, rec.Body.String(), "application/json")
 	})
 
 	t.Run("expired signature", func(t *testing.T) {

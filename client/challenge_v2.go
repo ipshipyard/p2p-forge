@@ -152,7 +152,10 @@ func signV2Request(req *http.Request, privKey crypto.PrivKey, body []byte) error
 	}
 	req.Header.Set("Content-Digest", cd)
 
+	// SignAlg(false) keeps the wire minimal: the key in keyid decides the
+	// algorithm, and the server rejects any alg other than ed25519.
 	cfg := httpsign.NewSignConfig().
+		SignAlg(false).
 		SignCreated(true).
 		SetExpires(time.Now().Add(httpsig.MaxSignatureLifetime).Unix()).
 		SetNonce(nonce).
@@ -173,7 +176,7 @@ func signV2Request(req *http.Request, privKey crypto.PrivKey, body []byte) error
 
 // generateNonce returns a fresh base64url nonce with 128 bits of entropy.
 func generateNonce() (string, error) {
-	b := make([]byte, 16)
+	b := make([]byte, httpsig.MinNonceBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generating nonce: %w", err)
 	}

@@ -23,10 +23,9 @@ const (
 	MaxSignatureLifetime = 5 * time.Minute
 	// MaxForwardDrift is how far in the future `created` may be.
 	MaxForwardDrift = 30 * time.Second
-	// MinNonceLen is the minimum accepted nonce length in base64url
-	// characters: 22 characters is the shortest encoding of the required 128
-	// bits of entropy.
-	MinNonceLen = 22
+	// MinNonceBytes is the minimum nonce entropy: 128 bits, carried as
+	// unpadded base64url in the nonce parameter.
+	MinNonceBytes = 16
 )
 
 // RegistrationComponents is the fixed, ordered set of covered components for a

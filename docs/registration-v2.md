@@ -81,9 +81,16 @@ with these signature parameters:
 | --- | --- |
 | `created` | Unix seconds when signed. |
 | `expires` | Unix seconds when the signature stops being valid. `expires - created` MUST be `<= 300`. |
-| `nonce` | Random, at least 128 bits, base64url, fresh for every signature. |
+| `nonce` | At least 128 random bits, unpadded base64url, fresh for every signature. |
 | `keyid` | The `did:key` above. |
 | `tag` | `p2p-forge-reg`. |
+
+The server enforces this grammar as written: it compares the covered-components
+list against the exact serialization above (same set, same order, no
+per-component parameters) and rejects anything else as `malformed-signature`.
+An `alg` parameter is OPTIONAL, because the key in `keyid` decides the
+algorithm; a present `alg` MUST be `ed25519`. Any signature parameter other
+than the table above and `alg` MUST be rejected.
 
 `@authority` MUST equal the registration domain (for example
 `registration.libp2p.direct`). `@target-uri` and `@scheme` are deliberately not
@@ -113,15 +120,20 @@ trailing newline. For a POST to `registration.libp2p.direct` it looks like:
 "@signature-params": ("@method" "@authority" "@path" "content-type" "content-digest");created=1700000000;expires=1700000060;nonce="dGVzdG5vbmNlMTIzNDU2Nw";keyid="did:key:z6Mk...";tag="p2p-forge-reg"
 ```
 
-The `Signature-Input` and `Signature` headers use the label `sig1`:
+The `Signature-Input` and `Signature` headers MUST each appear exactly once and
+carry exactly one signature, labeled `sig1`; the server rejects any other label
+and any additional signature:
 
 ```
 Signature-Input: sig1=("@method" "@authority" "@path" "content-type" "content-digest");created=1700000000;expires=1700000060;nonce="dGVzdG5vbmNlMTIzNDU2Nw";keyid="did:key:z6Mk...";tag="p2p-forge-reg"
 Signature: sig1=:<base64 of the Ed25519 signature over the base>:
 ```
 
-`Signature-Input` MUST be in RFC 8941 canonical form. The signature is a raw
-Ed25519 signature over the UTF-8 bytes of the base.
+`Signature-Input` MUST be in RFC 8941 canonical form: the server rebuilds the
+signature base from the canonical serialization of what it received, so a
+non-canonical form verifies only if the signature was made over the canonical
+form. The signature is a raw Ed25519 signature over the UTF-8 bytes of the
+base.
 
 ### Body
 
@@ -132,8 +144,10 @@ Ed25519 signature over the UTF-8 bytes of the base.
 }
 ```
 
-The body MUST be at most 8 KiB. The server MUST reject unknown JSON fields and
-trailing data. `addresses` tells the forge where to prove reachability (below).
+The request MUST carry `Content-Type: application/json` (media-type parameters
+such as `charset` are ignored). The body MUST be at most 8 KiB. The server MUST
+reject unknown JSON fields and trailing data. `addresses` tells the forge where
+to prove reachability (below).
 
 ### Success
 
@@ -238,9 +252,9 @@ classes apart SHOULD match on that fragment.
 | Status | `type` fragment | When |
 | --- | --- | --- |
 | `400` | `unexpected-query` | The request carries a query string. |
-| `400` | `malformed-body` | The body is not the JSON object above, has unknown fields, or has trailing data. |
+| `400` | `malformed-body` | The `Content-Type` is not `application/json`, the body is not the JSON object above, has unknown fields, or has trailing data. |
 | `400` | `malformed-value` | `value` is not unpadded base64url of a 32-byte SHA-256 digest. |
-| `400` | `malformed-signature` | The request does not conform to this profile: unparseable signature headers, a bad `did:key`, a nonce under 128 bits, a missing `created` or `expires`, `expires - created` over 300 seconds, or a `Content-Digest` that is malformed or does not match the body. |
+| `400` | `malformed-signature` | The request does not conform to this profile: unparseable signature headers, a label other than `sig1`, covered components other than the exact list above, an unknown signature parameter, an `alg` other than `ed25519`, a bad `did:key`, a `nonce` that is not unpadded base64url of at least 128 bits, a missing `created` or `expires`, `expires - created` over 300 seconds, or a `Content-Digest` that is malformed or does not match the body. |
 | `401` | `signature-invalid` | Signature verification failed, a required component is not covered, the clock window is violated, or `@authority` is not the registration domain. |
 | `403` | `denylisted` | The client IP or a submitted address is denylisted. |
 | `413` | `body-too-large` | The body exceeds 8 KiB. |

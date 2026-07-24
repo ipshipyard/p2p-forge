@@ -3,11 +3,13 @@ package acme
 import (
 	"bytes"
 	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 
+	"github.com/dunglas/httpsfv"
 	"github.com/ipshipyard/p2p-forge/internal/httpsig"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/yaronf/httpsign"
@@ -30,6 +32,9 @@ var errMalformed = errors.New("malformed request")
 // registration domain. Identity is taken from the signature's keyid, which
 // carries the public key, so the body has nothing to spoof.
 func verifyV2Request(r *http.Request, body []byte, domain string) (*v2Verified, error) {
+	if err := enforceV2Envelope(r); err != nil {
+		return nil, err
+	}
 	// Read the keyid before verification so we can resolve the key it names.
 	details, err := httpsign.RequestDetails(httpsig.SigLabel, r)
 	if err != nil {
@@ -38,13 +43,24 @@ func verifyV2Request(r *http.Request, body []byte, domain string) (*v2Verified, 
 	if details.KeyID == nil {
 		return nil, fmt.Errorf("%w: signature is missing a keyid", errMalformed)
 	}
+	// The key in keyid decides the algorithm; a present alg must agree.
+	if details.Alg != "" && details.Alg != "ed25519" {
+		return nil, fmt.Errorf("%w: alg %q does not match the key type", errMalformed, details.Alg)
+	}
+	if details.CustomParams != nil {
+		return nil, fmt.Errorf("%w: unknown signature parameters", errMalformed)
+	}
 	// The nonce is required so every signature is unique. The server does not
 	// track nonces; replay is bounded by the expires window instead.
 	if details.Nonce == nil {
 		return nil, fmt.Errorf("%w: signature is missing a nonce", errMalformed)
 	}
-	if len(*details.Nonce) < httpsig.MinNonceLen {
-		return nil, fmt.Errorf("%w: nonce is shorter than %d base64url characters", errMalformed, httpsig.MinNonceLen)
+	nonceBytes, err := base64.RawURLEncoding.DecodeString(*details.Nonce)
+	if err != nil {
+		return nil, fmt.Errorf("%w: nonce is not unpadded base64url", errMalformed)
+	}
+	if len(nonceBytes) < httpsig.MinNonceBytes {
+		return nil, fmt.Errorf("%w: nonce carries fewer than %d random bytes", errMalformed, httpsig.MinNonceBytes)
 	}
 	// The library treats expires as optional and only bounds created, so the
 	// profile's "expires present, expires-created <= MaxSignatureLifetime" is
@@ -109,4 +125,55 @@ func verifyV2Request(r *http.Request, body []byte, domain string) (*v2Verified, 
 		return nil, fmt.Errorf("deriving peer ID: %w", err)
 	}
 	return &v2Verified{peerID: peerID, keyID: *details.KeyID}, nil
+}
+
+// enforceV2Envelope rejects signature headers that stray from the closed /v2
+// grammar before any cryptography runs: exactly one signature, labeled sig1,
+// covering exactly the profile components in order, with no per-component
+// parameters. The library alone would accept any label, extra components, and
+// any order.
+func enforceV2Envelope(r *http.Request) error {
+	coverage, err := singleSigMember(r, "Signature-Input")
+	if err != nil {
+		return err
+	}
+	if _, err := singleSigMember(r, "Signature"); err != nil {
+		return err
+	}
+
+	list, ok := coverage.(httpsfv.InnerList)
+	if !ok {
+		return fmt.Errorf("%w: Signature-Input %q is not a component list", errMalformed, httpsig.SigLabel)
+	}
+	if len(list.Items) != len(httpsig.RegistrationComponents) {
+		return fmt.Errorf("%w: signature must cover exactly %v", errMalformed, httpsig.RegistrationComponents)
+	}
+	for i, item := range list.Items {
+		name, ok := item.Value.(string)
+		if !ok || name != httpsig.RegistrationComponents[i] {
+			return fmt.Errorf("%w: signature must cover exactly %v, in this order", errMalformed, httpsig.RegistrationComponents)
+		}
+		if item.Params != nil && len(item.Params.Names()) > 0 {
+			return fmt.Errorf("%w: covered component %q must not carry parameters", errMalformed, name)
+		}
+	}
+	return nil
+}
+
+// singleSigMember parses the named header as an RFC 8941 dictionary and
+// returns its only member, which must be labeled sig1.
+func singleSigMember(r *http.Request, header string) (httpsfv.Member, error) {
+	values := r.Header.Values(header)
+	if len(values) != 1 {
+		return nil, fmt.Errorf("%w: expected exactly one %s header", errMalformed, header)
+	}
+	dict, err := httpsfv.UnmarshalDictionary(values)
+	if err != nil {
+		return nil, fmt.Errorf("%w: parsing %s: %w", errMalformed, header, err)
+	}
+	if names := dict.Names(); len(names) != 1 || names[0] != httpsig.SigLabel {
+		return nil, fmt.Errorf("%w: %s must carry exactly one signature, labeled %q", errMalformed, header, httpsig.SigLabel)
+	}
+	member, _ := dict.Get(httpsig.SigLabel)
+	return member, nil
 }

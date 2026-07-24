@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"time"
 
@@ -43,7 +44,6 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "unexpected-query", "query strings are not allowed")
 		return
 	}
-
 	// Cheapest gate first: the optional Forge-Authorization access token. Not
 	// part of the /v2 spec: an extra this implementation supports so an
 	// operator can run a limited rollout or a test instance before opening it
@@ -51,6 +51,12 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 	// spec-defined problem type.
 	if c.forgeAuthKey != "" && !constantTimeEqual(r.Header.Get(client.ForgeAuthHeader), c.forgeAuthKey) {
 		writeProblem(w, http.StatusForbidden, "", fmt.Sprintf("missing or invalid %s header", client.ForgeAuthHeader))
+		return
+	}
+
+	// The signature covers the Content-Type header; this pins its value.
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+		writeProblem(w, http.StatusBadRequest, "malformed-body", "Content-Type must be application/json")
 		return
 	}
 
