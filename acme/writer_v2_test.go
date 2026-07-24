@@ -130,8 +130,34 @@ func newTestWriter() *acmeWriter {
 		// Tests dial loopback hosts, which destination-IP vetting would reject.
 		AllowPrivateAddrs: true,
 	}
-	c.initAntiAbuse()
 	return c
+}
+
+// TestV2ResubmitIsIdempotent locks in the replay stance: the server does not
+// track nonces, so resubmitting a captured request within its expires window
+// repeats the same registration and changes nothing.
+func TestV2ResubmitIsIdempotent(t *testing.T) {
+	initMetrics()
+	h, priv := newRegistrantHost(t)
+	c := newTestWriter()
+
+	value := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x05}, 32))
+	signed := signedV2Request(t, priv, value, addrStrings(h))
+	body, err := io.ReadAll(signed.Body)
+	require.NoError(t, err)
+	header := signed.Header.Clone()
+
+	resubmit := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "https://"+v2TestDomain+"/v2/_acme-challenge", bytes.NewReader(body))
+		r.Host = v2TestDomain
+		r.Header = header.Clone()
+		rec := httptest.NewRecorder()
+		c.handleV2Challenge(rec, r)
+		return rec
+	}
+
+	require.Equal(t, http.StatusOK, resubmit().Code, "first submission succeeds")
+	require.Equal(t, http.StatusOK, resubmit().Code, "resubmission succeeds too")
 }
 
 func TestV2ChallengeHandlerRoundTrip(t *testing.T) {

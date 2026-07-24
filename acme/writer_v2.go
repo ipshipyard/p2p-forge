@@ -76,19 +76,6 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 	}
 	peerID := verified.peerID
 
-	// Single-use nonce: reject a replayed signed request before the dialback.
-	if c.nonces != nil {
-		if err := c.nonces.reserve(r.Context(), peerID, verified.nonce); err != nil {
-			if errors.Is(err, errReplay) {
-				writeProblem(w, http.StatusConflict, "nonce-replayed", "this request has already been submitted")
-			} else {
-				writeProblem(w, http.StatusInternalServerError, "nonce-store-error", "could not verify request freshness")
-				log.Errorf("v2: nonce store error for %s: %v", peerID, err)
-			}
-			return
-		}
-	}
-
 	typedBody, err := decodeV2Body(body)
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "malformed-body", err.Error())

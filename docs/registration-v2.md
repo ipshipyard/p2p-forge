@@ -81,7 +81,7 @@ with these signature parameters:
 | --- | --- |
 | `created` | Unix seconds when signed. |
 | `expires` | Unix seconds when the signature stops being valid. `expires - created` MUST be `<= 300`. |
-| `nonce` | Random, at least 128 bits, base64url. MUST be single-use (see replay below). |
+| `nonce` | Random, at least 128 bits, base64url, fresh for every signature. |
 | `keyid` | The `did:key` above. |
 | `tag` | `p2p-forge-reg`. |
 
@@ -244,10 +244,9 @@ classes apart SHOULD match on that fragment.
 | `401` | `signature-invalid` | Signature verification failed, a required component is not covered, the clock window is violated, or `@authority` is not the registration domain. |
 | `403` | `forbidden` | Missing or wrong `Forge-Authorization` where the operator requires one. |
 | `403` | `denylisted` | The client IP or a submitted address is denylisted. |
-| `409` | `nonce-replayed` | The nonce was already used (replay). |
 | `413` | `body-too-large` | The body exceeds 8 KiB. |
 | `422` | `verification-failed` | No submitted address could be verified. |
-| `500` | `misconfigured`, `nonce-store-error`, `storage-error` | Server-side failure; safe to retry later. |
+| `500` | `misconfigured`, `storage-error` | Server-side failure; safe to retry later. |
 
 A fronting proxy may add others, such as `429` when it rate-limits.
 
@@ -255,8 +254,11 @@ A fronting proxy may add others, such as `429` when it rate-limits.
 
 - **Rate limiting** is the operator's responsibility on the fronting reverse
   proxy, CDN, or load balancer. The forge does not rate-limit requests itself.
-- **Replay.** The server MUST treat each `nonce` as single-use and reject a
-  reused one, so a captured request cannot be replayed within its window.
+- **Replay.** The server does not track nonces, so a captured request can be
+  resubmitted until its `expires` passes. This is accepted: the signature
+  binds the whole request, so a replay can only repeat it, re-verifying the
+  same addresses and re-writing the same TXT value. The `nonce` keeps every
+  signature unique, and a server MAY additionally reject reused nonces.
 - **Denylist** applies to the client IP and to every resolved endpoint IP. The
   forge MUST NOT trust a leftmost `X-Forwarded-For` for the client IP, which any
   client can forge; it trusts only the direct connection address plus, when the

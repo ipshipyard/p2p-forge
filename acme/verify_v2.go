@@ -17,7 +17,6 @@ import (
 type v2Verified struct {
 	peerID peer.ID
 	keyID  string // the did:key that signed
-	nonce  string
 }
 
 // errMalformed marks a request that does not conform to the /v2 signing
@@ -39,6 +38,8 @@ func verifyV2Request(r *http.Request, body []byte, domain string) (*v2Verified, 
 	if details.KeyID == nil {
 		return nil, fmt.Errorf("%w: signature is missing a keyid", errMalformed)
 	}
+	// The nonce is required so every signature is unique. The server does not
+	// track nonces; replay is bounded by the expires window instead.
 	if details.Nonce == nil {
 		return nil, fmt.Errorf("%w: signature is missing a nonce", errMalformed)
 	}
@@ -107,5 +108,5 @@ func verifyV2Request(r *http.Request, body []byte, domain string) (*v2Verified, 
 	if err != nil {
 		return nil, fmt.Errorf("deriving peer ID: %w", err)
 	}
-	return &v2Verified{peerID: peerID, keyID: *details.KeyID, nonce: *details.Nonce}, nil
+	return &v2Verified{peerID: peerID, keyID: *details.KeyID}, nil
 }

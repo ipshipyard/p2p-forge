@@ -62,8 +62,6 @@ type acmeWriter struct {
 
 	Datastore datastore.TTLDatastore
 
-	nonces *nonceStore
-
 	ln           net.Listener
 	nlSetup      bool
 	closeCertMgr func()
@@ -110,8 +108,6 @@ func (c *acmeWriter) OnStartup() error {
 
 	c.ln = ln
 	c.nlSetup = true
-
-	c.initAntiAbuse()
 
 	// server side secret key and peerID not particularly relevant, so we can generate new ones as needed
 	sk, _, err := crypto.GenerateEd25519Key(rand.Reader)
