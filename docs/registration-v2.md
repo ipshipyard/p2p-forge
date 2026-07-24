@@ -208,10 +208,11 @@ Notes for operators of the endpoint:
   the HTTP tier. A static file server or a CDN can serve the token.
 - The endpoint MUST answer on port 80 or 443 on the public forge instance.
 - The forge MUST pin the connection to the endpoint's resolved public IP, MUST
-  refuse a non-public target, and MUST NOT follow redirects. It verifies TLS
-  against a real CA cert when one is present, and otherwise falls back to
-  trusting the signature and the IP (a node registering because it has no cert
-  yet is the common case).
+  refuse a non-public target, and MUST NOT follow redirects. It does not
+  require a CA-verified TLS certificate on this fetch: a node registers
+  precisely because it has no publicly trusted cert yet, and the proof's
+  authenticity comes from its signature plus the pinned IP, not from the
+  transport.
 
 ### libp2p-dialback
 

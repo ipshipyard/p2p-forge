@@ -165,62 +165,44 @@ func (c *acmeWriter) resolvePinnedIP(ctx context.Context, host string) (netip.Ad
 
 // fetchOwnershipProof GETs the well-known proof, pinning the connection to ip so
 // a DNS rebind cannot redirect it, following no redirects, and capping the body.
-// For https it first tries WebPKI verification (strong host binding); if that
-// fails (e.g. the node has no valid cert yet) it retries without verification,
-// where host binding rests on the IP pin and key binding on the signature.
+// The fetch never requires a CA-verified certificate: a node registers precisely
+// because it has no publicly trusted cert yet, so authenticity rests on the
+// proof's signature and host binding on the pinned, vetted IP, not on WebPKI.
 func fetchOwnershipProof(ctx context.Context, o client.HTTPOrigin, ip netip.Addr, keyID string) ([]byte, error) {
 	proofURL := o.Origin + client.WellKnownProofPath + keyID
 	pinned := net.JoinHostPort(ip.String(), o.Port)
 
-	do := func(insecure bool) ([]byte, error) {
-		transport := &http.Transport{
-			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, network, pinned) // ignore the hostname; connect to the pinned IP
-			},
-			DisableKeepAlives:      true,
-			DisableCompression:     true,
-			ResponseHeaderTimeout:  ownershipFetchTimeout,
-			MaxResponseHeaderBytes: 16 << 10,
-			TLSClientConfig:        &tls.Config{ServerName: o.Host, InsecureSkipVerify: insecure},
-		}
-		httpClient := &http.Client{
-			Transport:     transport,
-			Timeout:       ownershipFetchTimeout,
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, proofURL, nil)
-		if err != nil {
-			return nil, err
-		}
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("ownership endpoint returned %s", resp.Status)
-		}
-		body, err := io.ReadAll(io.LimitReader(resp.Body, ownershipBodyLimit))
-		if err != nil {
-			return nil, fmt.Errorf("reading ownership proof: %w", err)
-		}
-		return body, nil
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, pinned) // ignore the hostname; connect to the pinned IP
+		},
+		DisableKeepAlives:      true,
+		DisableCompression:     true,
+		ResponseHeaderTimeout:  ownershipFetchTimeout,
+		MaxResponseHeaderBytes: 16 << 10,
+		TLSClientConfig:        &tls.Config{ServerName: o.Host, InsecureSkipVerify: true},
 	}
-
-	if o.Scheme == "https" {
-		body, err := do(false)
-		if err == nil {
-			return body, nil
-		}
-		// Retry without verification only when the cert itself failed to verify
-		// (the node has no valid CA cert yet). Do not retry on a refused
-		// connection, timeout, or non-200, which would just double the work.
-		var certErr *tls.CertificateVerificationError
-		if errors.As(err, &certErr) {
-			return do(true)
-		}
+	httpClient := &http.Client{
+		Transport:     transport,
+		Timeout:       ownershipFetchTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, proofURL, nil)
+	if err != nil {
 		return nil, err
 	}
-	return do(true)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ownership endpoint returned %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, ownershipBodyLimit))
+	if err != nil {
+		return nil, fmt.Errorf("reading ownership proof: %w", err)
+	}
+	return body, nil
 }

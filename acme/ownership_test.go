@@ -61,10 +61,10 @@ func TestHTTPOwnershipVerify(t *testing.T) {
 	})
 }
 
-func TestHTTPOwnershipTLSFallback(t *testing.T) {
+func TestHTTPOwnershipSelfSignedTLS(t *testing.T) {
 	// A node registering because it has no CA-valid cert yet serves the proof
-	// over HTTPS with a self-signed cert; verification must fall back from
-	// WebPKI to the pinned-IP + signature path.
+	// over HTTPS with a self-signed cert; verification rests on the proof
+	// signature and the pinned IP, never on WebPKI.
 	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
 	require.NoError(t, err)
 	mux := http.NewServeMux()
