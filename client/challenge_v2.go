@@ -58,20 +58,11 @@ func SendChallengeV2(ctx context.Context, baseURL string, privKey crypto.PrivKey
 		return fmt.Errorf("creating request to %s: %w", registrationURL, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if userAgent == "" {
-		userAgent = defaultUserAgent
-	}
-	req.Header.Set("User-Agent", userAgent)
-	if forgeAuth != "" {
-		req.Header.Set(ForgeAuthHeader, forgeAuth)
-	}
-
-	// modifyForgeRequest runs before signing: it may set req.Host, which is a
-	// covered component (@authority).
-	if modifyForgeRequest != nil {
-		if err := modifyForgeRequest(req); err != nil {
-			return err
-		}
+	// decorateForgeRequest runs the modifyForgeRequest hook, which may set
+	// req.Host (the covered @authority component), so it must run before
+	// signing. Content-Type is also covered and is set above.
+	if err := decorateForgeRequest(req, forgeAuth, userAgent, modifyForgeRequest); err != nil {
+		return err
 	}
 
 	if err := signV2Request(req, privKey, body); err != nil {
@@ -88,15 +79,13 @@ func SendChallengeV2(ctx context.Context, baseURL string, privKey crypto.PrivKey
 	}
 	defer resp.Body.Close()
 
+	// A forge without /v2 answers 404 (path absent) or 405 (v1-only mux); map
+	// those to ErrV2Unsupported so a caller can fall back to /v1.
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
 		return fmt.Errorf("%w: %s", ErrV2Unsupported, resp.Status)
 	}
 	if resp.StatusCode != http.StatusOK {
-		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		if readErr != nil {
-			return fmt.Errorf("%s from %s (reading error body failed: %w)", resp.Status, registrationURL, readErr)
-		}
-		return fmt.Errorf("%s error from %s: %q", resp.Status, registrationURL, respBody)
+		return renderChallengeError(resp, registrationURL)
 	}
 	return nil
 }
@@ -120,9 +109,10 @@ func marshalChallengeBody(challenge string, addrs []multiaddr.Multiaddr) ([]byte
 }
 
 // isEd25519 reports whether k is an Ed25519 key, the only type /v2 accepts.
+// It checks the key's Type() rather than a concrete Go type, so a wrapped or
+// delegated Ed25519 key is still recognized.
 func isEd25519(k crypto.PrivKey) bool {
-	_, ok := k.(*crypto.Ed25519PrivateKey)
-	return ok
+	return k.Type() == crypto.Ed25519
 }
 
 // signV2Request signs req in place for the /v2 profile: an RFC 9421 signature
