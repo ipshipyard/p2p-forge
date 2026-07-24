@@ -14,9 +14,12 @@ registry rather than invented here:
    ([W3C did:key spec](https://w3c-ccg.github.io/did-key-spec/)), which is
    self-describing: the key's type is a
    [multicodec](https://github.com/multiformats/multicodec) prefix on the raw
-   public key. Adding a type means accepting its multicodec when decoding the
-   `did:key`. Old clients are unaffected. A request with a key type the server
-   does not accept fails with a `malformed-signature` error.
+   public key. The exact Ed25519 encoding (`0xed01` prefix, base58btc, `z`
+   header) is pinned by
+   [W3C Controlled Identifiers 1.0](https://www.w3.org/TR/cid-1.0/), a
+   Recommendation. Adding a type means accepting its multicodec when decoding
+   the `did:key`. Old clients are unaffected. A request with a key type the
+   server does not accept fails with a `malformed-signature` error.
 2. **Algorithm.** The forge MUST derive the signature algorithm from the key's
    multicodec, never from a client-supplied value. RFC 9421 allows an explicit
    `alg` parameter but treats the key material as authoritative; this profile
@@ -55,16 +58,20 @@ peer ID is at most 63 octets.
 
 ## Classical key types
 
-libp2p keys map to multicodecs and RFC 9421 algorithms as follows. Only the
-first is enabled today.
+Ed25519 is the only supported type. The rest are unsupported on `/v2` and stay
+on `/v1`; the notes say what each would need before it could be enabled, and
+none should be enabled until a spec pins that piece and ships a test vector.
 
-| Key | Multicodec | RFC 9421 algorithm | Notes |
-| --- | --- | --- | --- |
-| Ed25519 | `0xed` | `ed25519` | Enabled. libp2p signs raw 64-byte Ed25519, which is exactly what RFC 9421 `ed25519` expects, so it interoperates with off-the-shelf tooling. This is why it is the primary. |
-| ECDSA P-256 | `0x1200` | `ecdsa-p256-sha256` | Registered, but an encoding gap: libp2p signs ASN.1 DER, while RFC 9421 (section 3.3) mandates the fixed-width `r \|\| s` form (as in JWS). An implementation MUST convert between them. |
-| ECDSA P-384 | `0x1201` | `ecdsa-p384-sha384` | Same encoding gap as P-256. |
-| RSA (PKCS#1 v1.5, SHA-256) | `0x1205` | `rsa-v1_5-sha256` | Registered and encoding-compatible. RSA signatures and keys are large, so mind the request size limits. |
-| secp256k1 | `0xe7` | none | No IANA-registered RFC 9421 algorithm exists. Enabling it needs a profile-defined algorithm identifier and a decision on encoding (libp2p uses ASN.1 DER). Treat as a last resort until a registration exists. |
+The multicodec registry marks all of these code points `draft` (it reserves
+`permanent` for a small core set), so the values below can still change.
+
+| Key | Status | Multicodec | RFC 9421 algorithm | Notes |
+| --- | --- | --- | --- | --- |
+| Ed25519 | Supported | `0xed` | `ed25519` | libp2p signs raw 64-byte Ed25519, exactly what RFC 9421 `ed25519` expects, so it interoperates with off-the-shelf tooling. This is why it is the primary. |
+| ECDSA P-256 | Unsupported | `0x1200` | `ecdsa-p256-sha256` | libp2p signs ASN.1 DER, while RFC 9421 (section 3.3) mandates the fixed-width `r \|\| s` form (as in JWS), and the multicodec is a compressed point, so both the key bytes and the signature bytes need conversion. |
+| ECDSA P-384 | Unsupported | `0x1201` | `ecdsa-p384-sha384` | Same encoding gaps as P-256. |
+| RSA (PKCS#1 v1.5, SHA-256) | Unsupported | `0x1205` | `rsa-v1_5-sha256` | Encoding-compatible, but not enabled. Signatures and keys are large, so mind the request size limits. |
+| secp256k1 | Unsupported | `0xe7` | none | No IANA-registered RFC 9421 algorithm exists. Enabling it needs a profile-defined algorithm identifier and a decision on encoding (libp2p uses ASN.1 DER). |
 
 ## Post-quantum signatures
 
@@ -83,19 +90,21 @@ The identifier and algorithm layers are already landing:
 - [Multicodec](https://github.com/multiformats/multicodec) code points for the
   public keys are registered (draft): `mldsa-{44,65,87}-pub` (`0x1210`-`0x1212`)
   and `slhdsa-*-pub` (`0x1220`+).
-- The IANA HTTP Message Signature Algorithms registry already lists `ml-dsa-44`,
-  `ml-dsa-65`, and `ml-dsa-87` as Active, defined by the C2SP
-  [`httpsig-pq`](https://c2sp.org/httpsig-pq) specification.
+- The `ml-dsa-44`, `ml-dsa-65`, and `ml-dsa-87` algorithm identifiers are
+  defined by the C2SP [`httpsig-pq`](https://c2sp.org/httpsig-pq)
+  specification. They are not yet in the IANA HTTP Message Signature
+  Algorithms registry, which currently holds only the six RFC 9421
+  algorithms; httpsig-pq requests their registration.
 
 ML-DSA fits this profile more cleanly than ECDSA does: its signatures are raw,
 fixed-size byte strings, like Ed25519, so they carry in the `Signature` header
 with no DER-to-`r || s` reconciliation. Once the pieces below are in place,
 enabling ML-DSA is the same three-step change as any other key type.
 
-| Key | Multicodec | RFC 9421 algorithm | Status |
-| --- | --- | --- | --- |
-| ML-DSA-44 / 65 / 87 | `0x1210` / `0x1211` / `0x1212` (draft) | `ml-dsa-44` / `ml-dsa-65` / `ml-dsa-87` (Active) | Identifiers exist on both layers; blocked on libp2p key support. |
-| SLH-DSA (all parameter sets) | `0x1220`+ (draft) | none | No RFC 9421 algorithm yet, and signatures are large (see below). |
+| Key | Status | Multicodec | RFC 9421 algorithm | Notes |
+| --- | --- | --- | --- | --- |
+| ML-DSA-44 / 65 / 87 | Unsupported | `0x1210` / `0x1211` / `0x1212` (draft) | `ml-dsa-44` / `ml-dsa-65` / `ml-dsa-87` (C2SP, IANA registration pending) | Identifiers exist on both layers; blocked on libp2p key support. |
+| SLH-DSA (all parameter sets) | Unsupported | `0x1220`+ (draft) | none | No RFC 9421 algorithm yet, and signatures are large (see below). |
 
 What is still pending, and where:
 
@@ -125,11 +134,13 @@ too large to carry in a header for now.
 - Prefer a key type that has both a `did:key` multicodec and an IANA-registered
   RFC 9421 algorithm whose signature encoding matches what libp2p produces.
   Ed25519 is the only one that clears all three bars unchanged.
-- For ECDSA, specify the DER-to-`r \|\| s` conversion before enabling the type,
-  and add a test vector, so non-Go and non-libp2p signers can interoperate.
-- Do not invent an `alg` identifier when a registered one fits. Adopt the
-  published multicodec and IANA RFC 9421 identifiers (for example the `ml-dsa-*`
-  names above) rather than a local name.
+- For ECDSA, specify both conversions before enabling the type, the
+  compressed-point public key and the DER-to-`r \|\| s` signature, and add a
+  test vector, so non-Go and non-libp2p signers can interoperate.
+- Do not invent an `alg` identifier when a published one fits. Adopt the
+  registered multicodec and the RFC 9421 algorithm identifier from IANA, or
+  from a public spec pending IANA registration (for example the C2SP
+  `ml-dsa-*` names above), rather than a local name.
 - Migration is additive: a new type is opt-in, the `did:key` self-describes it,
   and Ed25519 stays the default while existing clients keep working through a
   dual-stack transition.
