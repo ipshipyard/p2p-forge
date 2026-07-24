@@ -92,10 +92,12 @@ covered, because a TLS-terminating load balancer rewrites the scheme the backend
 sees. A request MUST NOT carry a query string, and the server MUST reject one, so
 `@query` is not covered either.
 
-The server MUST reject a `created` more than 30 seconds in the future, a
-`created` older than 7 minutes (the 5-minute maximum lifetime plus 2 minutes of
-allowance for a slow client clock), and an `expires` that has already passed. A
-client with a fast clock SHOULD NOT sign `created` far ahead of real time.
+The server MUST reject a `created` more than 30 seconds in the future and an
+`expires` that has already passed. With the 300-second cap on
+`expires - created`, this is the whole freshness policy. There is no extra
+grace for client clock skew: a skewed clock shifts `created` and `expires` by
+the same amount, so the `expires` check covers it. A client with a fast clock
+SHOULD NOT sign `created` far ahead of real time.
 
 ### Signature base
 

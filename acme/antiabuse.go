@@ -14,9 +14,9 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// nonceTTL is how long a used nonce is remembered. It must exceed the maximum
-// signature lifetime plus clock skew on both sides so a nonce cannot expire from
-// the store while its signature is still valid.
+// nonceTTL is how long a used nonce is remembered. It must outlive the longest
+// window in which a signature can still verify: the maximum signature lifetime
+// plus the allowed forward drift of created.
 const nonceTTL = 20 * time.Minute
 
 // errReplay signals a nonce that has already been used.
@@ -26,8 +26,8 @@ var errReplay = errors.New("nonce already used")
 // is intentionally not done here; it belongs on the fronting reverse proxy, CDN,
 // or load balancer. It is idempotent and safe to call from OnStartup and tests.
 func (c *acmeWriter) initAntiAbuse() {
-	if min := httpsig.MaxSignatureLifetime + 2*httpsig.MaxClockSkew; nonceTTL <= min {
-		panic(fmt.Sprintf("nonceTTL (%s) must exceed max signature lifetime + 2x skew (%s)", nonceTTL, min))
+	if min := httpsig.MaxSignatureLifetime + httpsig.MaxForwardDrift; nonceTTL <= min {
+		panic(fmt.Sprintf("nonceTTL (%s) must exceed max signature lifetime + forward drift (%s)", nonceTTL, min))
 	}
 	if c.nonces == nil && c.Datastore != nil {
 		c.nonces = newNonceStore(c.Datastore, nonceTTL)

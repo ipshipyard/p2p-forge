@@ -79,10 +79,15 @@ func verifyV2Request(r *http.Request, body []byte, domain string) (*v2Verified, 
 
 	// Verify the signature. The verifier requires every covered component, so a
 	// caller cannot drop one; the tag and freshness window are enforced too.
+	// expires decides freshness: it must be present, at most created+300s
+	// (both checked above), and not yet passed (SetRejectExpired). The
+	// SetNotOlderThan bound never rejects anything on its own, because a
+	// created that old always comes with an already-passed expires; it is set
+	// only because the library needs a value when verifyCreated is on.
 	cfg := httpsign.NewVerifyConfig().
 		SetVerifyCreated(true).
 		SetNotNewerThan(httpsig.MaxForwardDrift).
-		SetNotOlderThan(httpsig.MaxSignatureLifetime + httpsig.MaxClockSkew).
+		SetNotOlderThan(httpsig.MaxSignatureLifetime + httpsig.MaxForwardDrift).
 		SetRejectExpired(true).
 		SetAllowedTags([]string{httpsig.RegistrationTag})
 	verifier, err := httpsign.NewEd25519Verifier(ed25519.PublicKey(raw), cfg, httpsign.Headers(httpsig.RegistrationComponents...))

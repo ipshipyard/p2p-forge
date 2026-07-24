@@ -17,12 +17,10 @@ const (
 	// RFC 9421 use.
 	RegistrationTag = "p2p-forge-reg"
 
-	// MaxSignatureLifetime bounds expires-created.
+	// MaxSignatureLifetime bounds expires-created. No extra grace for client
+	// clock skew is needed: a skewed clock shifts created and expires by the
+	// same amount, so the expires check covers it.
 	MaxSignatureLifetime = 5 * time.Minute
-	// MaxClockSkew extends the accepted age of `created` beyond
-	// MaxSignatureLifetime, tolerating a slow client clock. `expires` gets no
-	// such grace: a signature past its own deadline is rejected outright.
-	MaxClockSkew = 2 * time.Minute
 	// MaxForwardDrift is how far in the future `created` may be.
 	MaxForwardDrift = 30 * time.Second
 	// MinNonceLen is the minimum accepted nonce length in base64url
