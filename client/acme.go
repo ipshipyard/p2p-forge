@@ -107,6 +107,12 @@ type P2PForgeCertMgrConfig struct {
 	produceShortAddrs          bool
 	renewCheckInterval         time.Duration
 	registrationDelay          time.Duration
+
+	// httpBrokeredKey, when set, makes the manager run the HTTP-BROKERED-DNS-01
+	// challenge (/v2) instead of the libp2p dialback (/v1). See
+	// WithHTTPBrokeredDNS01.
+	httpBrokeredKey     SigningKey
+	httpBrokeredOrigins []string
 }
 
 type P2PForgeCertMgrOptions func(*P2PForgeCertMgrConfig) error
@@ -168,6 +174,56 @@ func WithUserAgent(userAgent string) P2PForgeCertMgrOptions {
 		config.userAgent = userAgent
 		return nil
 	}
+}
+
+// WithHTTPBrokeredDNS01 makes the manager register over the forge /v2 (HTTP)
+// API instead of the default /v1 (libp2p dialback). key signs the registration
+// and origins are the node's public http(s) origins where it serves its
+// ownership proof; mount OwnershipProofHandler(key, origin) on each before the
+// manager starts. Everything else about the manager (cert storage, renewal,
+// TLS config, the libp2p address factory) is unchanged, so a libp2p node swaps
+// v1 for v2 by adding this one option.
+func WithHTTPBrokeredDNS01(key SigningKey, origins []string) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		if key.didKey == "" {
+			return fmt.Errorf("WithHTTPBrokeredDNS01: key is required")
+		}
+		if len(origins) == 0 {
+			return fmt.Errorf("WithHTTPBrokeredDNS01: at least one origin is required")
+		}
+		config.httpBrokeredKey = key
+		config.httpBrokeredOrigins = origins
+		return nil
+	}
+}
+
+// newDNS01Solver builds the registration solver: the /v2 HTTP solver when
+// WithHTTPBrokeredDNS01 is set, otherwise the default /v1 libp2p solver.
+func (c *P2PForgeCertMgrConfig) newDNS01Solver(hostFn func() host.Host, log *zap.SugaredLogger) (acmez.Solver, error) {
+	if c.httpBrokeredKey.didKey != "" {
+		return NewHTTPBrokeredDNS01Solver(HTTPBrokeredDNS01SolverConfig{
+			ForgeEndpoint: c.forgeRegistrationEndpoint,
+			Key:           c.httpBrokeredKey,
+			Origins:       c.httpBrokeredOrigins,
+			ForgeAuth:     c.forgeAuth,
+			UserAgent:     c.userAgent,
+			HTTPClient:    c.httpClient,
+			ModifyRequest: c.modifyForgeRequest,
+			Resolver:      c.resolver,
+			Logger:        log,
+		})
+	}
+	return &dns01P2PForgeSolver{
+		forgeRegistrationEndpoint:  c.forgeRegistrationEndpoint,
+		forgeAuth:                  c.forgeAuth,
+		hostFn:                     hostFn,
+		modifyForgeRequest:         c.modifyForgeRequest,
+		httpClient:                 c.httpClient,
+		userAgent:                  c.userAgent,
+		allowPrivateForgeAddresses: c.allowPrivateForgeAddresses,
+		log:                        log,
+		resolver:                   c.resolver,
+	}, nil
 }
 
 // WithHTTPClient sets the *http.Client used when talking to the forge
@@ -367,23 +423,20 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 		Logger:  mgrCfg.log.Desugar(),
 	})
 
-	// Wire up Issuer that does brokered DNS-01 ACME challenge
+	// Wire up Issuer that does brokered DNS-01 ACME challenge. The manager
+	// registers over /v1 (libp2p dialback) by default, or /v2 (HTTP ownership
+	// proof) when WithHTTPBrokeredDNS01 is set; the solver differs, the rest of
+	// the certmagic setup is the same.
 	acmeLog := mgrCfg.log.Named("acme-broker")
+	dns01Solver, err := mgrCfg.newDNS01Solver(mgr.hostFn, acmeLog.Named("dns01solver"))
+	if err != nil {
+		return nil, err
+	}
 	brokeredDNS01Issuer := certmagic.NewACMEIssuer(mgr.certmagic, certmagic.ACMEIssuer{
-		CA:     mgrCfg.caEndpoint,
-		Email:  mgrCfg.userEmail,
-		Agreed: true,
-		DNS01Solver: &dns01P2PForgeSolver{
-			forgeRegistrationEndpoint:  mgrCfg.forgeRegistrationEndpoint,
-			forgeAuth:                  mgrCfg.forgeAuth,
-			hostFn:                     mgr.hostFn,
-			modifyForgeRequest:         mgrCfg.modifyForgeRequest,
-			httpClient:                 mgrCfg.httpClient,
-			userAgent:                  mgrCfg.userAgent,
-			allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
-			log:                        acmeLog.Named("dns01solver"),
-			resolver:                   mgrCfg.resolver,
-		},
+		CA:           mgrCfg.caEndpoint,
+		Email:        mgrCfg.userEmail,
+		Agreed:       true,
+		DNS01Solver:  dns01Solver,
 		TrustedRoots: mgrCfg.trustedRoots,
 		Logger:       acmeLog.Desugar(),
 	})
@@ -647,49 +700,7 @@ type dns01P2PForgeSolver struct {
 }
 
 func (d *dns01P2PForgeSolver) Wait(ctx context.Context, challenge acme.Challenge) error {
-	// Try as long the challenge remains valid.
-	// This acts both as sensible timeout and as a way to rate-limit clients using this library.
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
-
-	// Extract the domain and expected TXT record value from the challenge
-	domain := fmt.Sprintf("_acme-challenge.%s", challenge.Identifier.Value)
-	expectedTXT := challenge.DNS01KeyAuthorization()
-	d.log.Infow("waiting for DNS-01 TXT record to be set", "domain", domain)
-
-	// Check if DNS-01 TXT record is correctly published by the p2p-forge
-	// backend. This step ensures we are good citizens: we don't want to move
-	// further and bother ACME endpoint with work if we are not confident
-	// DNS-01 challenge will be successful.
-	// We check fast, with backoff to avoid spamming DNS.
-	pollInterval := 1 * time.Second
-	maxPollInterval := 1 * time.Minute
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for DNS-01 TXT record to be set at %q: %v", domain, ctx.Err())
-		case <-ticker.C:
-			pollInterval *= 2
-			if pollInterval > maxPollInterval {
-				pollInterval = maxPollInterval
-			}
-			ticker.Reset(pollInterval)
-			txtRecords, err := d.resolver.LookupTXT(ctx, domain)
-			if err != nil {
-				d.log.Debugw("dns lookup error", "domain", domain, "error", err)
-				continue
-			}
-			for _, txt := range txtRecords {
-				if txt == expectedTXT {
-					d.log.Infow("confirmed TXT record for DNS-01 challenge is set", "domain", domain)
-					return nil
-				}
-			}
-			d.log.Debugw("no matching TXT record found yet, sleeping", "domain", domain)
-		}
-	}
+	return waitForTXT(ctx, d.resolver, d.log, challenge)
 }
 
 func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challenge) error {
