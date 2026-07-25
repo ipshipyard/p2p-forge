@@ -38,23 +38,68 @@ Two identifiers derive from the same key, with very different size budgets:
 - The **`did:key`** in the request carries the full public key. It is bounded
   only by HTTP header and JSON limits, so a multi-kilobyte post-quantum key is
   fine here.
-- The **DNS and cert identifier** is the libp2p peer ID as a base36 CID, used as
-  a single label in `_acme-challenge.<peerid-b36>.<forge>` and in the wildcard
-  cert `*.<peerid-b36>.<forge>`. A DNS label is capped at 63 octets
+- The **Peer ID** is the DNS and cert identifier: a base36 CID over the key,
+  used as a single label in `_acme-challenge.<peer-id>.<forge>` and in the
+  wildcard cert `*.<peer-id>.<forge>`. A DNS label is capped at 63 octets
   ([RFC 1035 section 2.3.4](https://www.rfc-editor.org/rfc/rfc1035#section-2.3.4)),
   and today's Ed25519 label is already about 62 characters, right at that limit.
 
-So the full public key cannot sit in the DNS label once a key is larger than
-Ed25519's. libp2p already handles this: for a key above its inline threshold (42
-bytes), the peer ID uses a SHA-256 multihash of the key instead of inlining it,
-so the base36 label stays a fixed ~57 characters whatever the key size. This is
-exactly how an RSA peer ID looks today, and it is how an ML-DSA peer ID will
-look: the CID commits to the key, and the full key is recovered from the
-`did:key` in the request, not from the DNS name.
+The Peer ID is defined by the recipe below, with no dependency on the libp2p
+stack. The recipe is deliberately the same one
+[libp2p](https://github.com/libp2p/specs/blob/master/peer-ids/peer-ids.md) uses
+for a peer ID, so the Peer ID is byte-identical to the libp2p peer ID of the
+same key and a node keeps one name across `/v1`, `/v2`, and the libp2p
+ecosystem.
 
-A new key type MUST use this hash-based peer ID unless its public key is as small
+So the full public key cannot sit in the DNS label once a key is larger than
+Ed25519's. The recipe handles this the way libp2p does: for a key above the
+inline threshold (42 bytes), the Peer ID uses a SHA-256 multihash of the key
+instead of inlining it, so the base36 label stays a fixed ~57 characters
+whatever the key size. This is how an RSA Peer ID looks today and how an ML-DSA
+one will look: the CID commits to the key, and the full key is recovered from
+the `did:key` in the request, not from the DNS name.
+
+A new key type MUST use this hash-based form unless its public key is as small
 as Ed25519's. Before enabling a type, an implementation MUST confirm the base36
-peer ID is at most 63 octets.
+Peer ID is at most 63 octets.
+
+### Deriving the Ed25519 Peer ID
+
+The Peer ID is a CID over the multihash of the key's protobuf-wrapped public
+key. A pure-HTTP client needs no libp2p library to compute it for Ed25519: the
+protobuf prefix is constant. From the 32 raw public-key bytes:
+
+1. Prefix them with `0x08 0x01 0x12 0x20` to get the 36-byte protobuf
+   `PublicKey{Type: Ed25519, Data: <key>}`.
+2. Wrap that in an identity multihash: prefix `0x00 0x24` (code 0, length 36).
+3. Wrap that in a CIDv1 with the `libp2p-key` codec: prefix `0x01 0x72`.
+4. Encode with multibase base36 (a leading `k`).
+
+Test vector, the `did:key` used throughout this spec:
+
+```
+did:key  did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK
+peer-id  k51qzi5uqu5dhc96r58jy0jkdk95s0ea50e1ci53otca8mxenz19bxhj4tebxi
+```
+
+### Label encoding for new key types
+
+Ed25519 keeps the libp2p peer ID encoding above (protobuf wrapper,
+`libp2p-key` codec) on purpose, for backward compatibility. The label
+equals the existing libp2p peer ID, so a node's cert matches the
+`<peer-id>.libp2p.direct` name that libp2p tooling and browsers already
+derive from its key, and one key carries one name across `/v1`, `/v2`, and
+libp2p. Dropping the wrapper would shorten the label (57 characters versus
+62 for the vector above) but break that correspondence, so it is not worth
+it for a key type already deployed in libp2p.
+
+A new key type has no such legacy. It SHOULD drop the libp2p protobuf
+wrapper and identify the key by its own multicodec, the way `did:key`
+does: a base36 encoding of the key's multicodec (for example a PQ
+`ml-dsa-*` code) over the key, not the generic `libp2p-key` codec over a
+protobuf. That is shorter and carries no libp2p-specific framing. Pin the
+exact encoding when the type is enabled, hashing the key as above to keep
+the base36 label within the 63-octet DNS limit.
 
 ## Classical key types
 
@@ -122,8 +167,8 @@ What is still pending, and where:
 
 PQ keys and signatures are large. ML-DSA public keys run 1.3 to 2.6 KB and its
 signatures 2.4 to 4.6 KB; SLH-DSA signatures reach 8 to 50 KB; Ed25519 is 32 and
-64 bytes. Large public keys never enter the DNS label, because the peer ID hashes
-them the same way it hashes an RSA key (see Identifiers above), but they do
+64 bytes. Large public keys never enter the DNS label, because the Peer ID
+hashes them the same way it hashes an RSA key (see Identifiers above), but they do
 travel in the `did:key`, and the `Signature` header grows with the signature.
 Check the header-size limits of any fronting proxy or CDN, and the proof-fetch
 header cap on the `HTTP-BROKERED-DNS-01` path. ML-DSA is workable; SLH-DSA is likely

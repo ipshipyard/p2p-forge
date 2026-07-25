@@ -1,6 +1,6 @@
 # p2p-forge `/v2` registration API
 
-The `/v2` API lets a node claim `*.<peerid>.libp2p.direct` and get a TLS cert
+The `/v2` API lets a node claim `*.<peer-id>.libp2p.direct` and get a TLS cert
 without running a libp2p client for the registration itself. Requests are signed
 with [HTTP Message Signatures (RFC 9421)](https://www.rfc-editor.org/rfc/rfc9421)
 and [Digest Fields (RFC 9530)](https://www.rfc-editor.org/rfc/rfc9530), so any
@@ -27,34 +27,41 @@ In this document the client is the registrant and the server is the forge.
 Two independent checks gate a registration:
 
 1. **Key ownership.** The request signature proves the caller holds the private
-   key for `<peerid>`. Only that key holder can set the DNS-01 record for its
-   own `*.<peerid>.libp2p.direct` name. This is the security-critical property,
+   key for the Peer ID. Only that key holder can set the DNS-01 record for its
+   own `*.<peer-id>.libp2p.direct` name. This is the security-critical property,
    and the server MUST verify the signature before it acts on the request.
 2. **A real, reachable endpoint.** The caller MUST prove control of a public
    HTTP origin by serving a signed proof the forge fetches (below). This is
    anti-abuse: it keeps the forge from minting certs for keys that run nothing.
    It does not scope the cert.
 
-The `<peerid>` never travels on the wire in `/v2`; requests and the success
-response carry a `did:key` instead. The base36 peerid appears only in the DNS
-name and the cert name, which `/v2` shares with `/v1`.
+The **Peer ID** names a peer by a public key the peer can prove it controls (an
+Ed25519 key on `/v2`; other key types register through `/v1`). It is the base36
+label in the DNS record and the wildcard cert (`*.<peer-id>.libp2p.direct`),
+derived from that key by a self-contained recipe
+([key-types.md](key-types.md)), so a `/v2` client needs no libp2p code to
+compute it. The recipe matches the one
+[libp2p](https://github.com/libp2p/specs/blob/master/peer-ids/peer-ids.md) uses,
+so the Peer ID is byte-identical to a libp2p peer ID for the same key and a peer
+keeps one name across `/v1`, `/v2`, and the libp2p ecosystem, but `/v2` does not
+depend on the libp2p stack.
+
+The Peer ID never travels on the wire in `/v2`: requests and the success
+response carry a `did:key`, and the Peer ID appears only in the DNS and cert
+names, which `/v2` shares with `/v1`.
 
 ## Endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/v2/_acme-challenge` | Set the DNS-01 TXT value for the peer derived from the signing key. |
+| `POST` | `/v2/_acme-challenge` | Set the DNS-01 TXT value for the Peer ID derived from the signing key. |
 | `GET` | `/v2/health` | Liveness. Always `204`. |
 
 ## Request signing
 
-### Key identifier
-
-`keyid` MUST be a `did:key` for an Ed25519 key, for example
-`did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK`. The server MUST derive
-identity with `peer.IDFromPublicKey` over the key in `keyid` and MUST NOT trust
-any peer field in the body. Non-Ed25519 keys are not accepted on `/v2`; those
-peers use `/v1`.
+Every request is signed with an RFC 9421 HTTP Message Signature over an RFC 9530
+Content-Digest of the body. The signing key is named in the `keyid` parameter
+(see [Key identifier](#key-identifier) below).
 
 ### Content-Digest (RFC 9530)
 
@@ -82,7 +89,7 @@ with these signature parameters:
 | `created` | Unix seconds when signed. |
 | `expires` | Unix seconds when the signature stops being valid. `expires - created` MUST be `<= 300`. |
 | `nonce` | At least 128 random bits, unpadded base64url, fresh for every signature. |
-| `keyid` | The `did:key` above. |
+| `keyid` | The signing key as a `did:key`; see [Key identifier](#key-identifier). |
 | `tag` | `autotls-reg`. |
 
 The server enforces this grammar as written: it compares the covered-components
@@ -135,6 +142,14 @@ non-canonical form verifies only if the signature was made over the canonical
 form. The signature is a raw Ed25519 signature over the UTF-8 bytes of the
 base.
 
+### Key identifier
+
+`keyid` MUST be a `did:key` for an Ed25519 key, for example
+`did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK`. The server derives
+the Peer ID from the key in `keyid` (the byte-level recipe is in
+[key-types.md](key-types.md)) and MUST NOT trust any identity field in the body.
+Non-Ed25519 keys are not accepted on `/v2`; those peers use `/v1`.
+
 ### Body
 
 ```json
@@ -156,7 +171,7 @@ reject unknown JSON fields and trailing data. `origins` lists the public
 ```json
 {
   "did": "did:key:z6Mk...",
-  "name": "*.<peerid-b36>.libp2p.direct",
+  "name": "*.<peer-id>.libp2p.direct",
   "challenge": "HTTP-BROKERED-DNS-01",
   "expiresIn": 3600
 }
