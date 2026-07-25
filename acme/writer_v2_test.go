@@ -197,6 +197,25 @@ func TestV2ChallengeHandlerRoundTrip(t *testing.T) {
 	require.Equal(t, "HTTP-BROKERED-DNS-01", resp.Challenge)
 }
 
+// TestV2ExtraSignatureIgnored confirms a request that carries a second
+// signature under another label still verifies: the server reads only sig1.
+func TestV2ExtraSignatureIgnored(t *testing.T) {
+	initMetrics()
+	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+	srv, _ := newProofServer(t, priv)
+	c := newTestWriter()
+
+	value := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x0c}, 32))
+	req := signedV2Request(t, priv, value, []string{srv.URL})
+	req.Header.Add("Signature-Input", `sig2=("@method");created=1700000000`)
+	req.Header.Add("Signature", "sig2=:AAAA:")
+	rec := httptest.NewRecorder()
+
+	c.handleV2Challenge(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
 func TestV2ChallengeHandlerRejects(t *testing.T) {
 	initMetrics()
 	value := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x01}, 32))
@@ -286,11 +305,14 @@ func TestV2ChallengeHandlerRejects(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 	})
 
-	t.Run("second signature label", func(t *testing.T) {
+	t.Run("missing sig1", func(t *testing.T) {
 		h, priv := newRegistrantHost(t)
 		req := signedV2Request(t, priv, value, addrStrings(h))
-		req.Header.Add("Signature-Input", `sig2=("@method");created=1700000000`)
-		req.Header.Add("Signature", "sig2=:AAAA:")
+		// Rename sig1 to sig2: the server looks only for sig1.
+		si := strings.Replace(req.Header.Get("Signature-Input"), "sig1=", "sig2=", 1)
+		sig := strings.Replace(req.Header.Get("Signature"), "sig1=", "sig2=", 1)
+		req.Header.Set("Signature-Input", si)
+		req.Header.Set("Signature", sig)
 		rec := httptest.NewRecorder()
 		newTestWriter().handleV2Challenge(rec, req)
 		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())

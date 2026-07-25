@@ -120,9 +120,9 @@ trailing newline. For a POST to `registration.libp2p.direct` it looks like:
 "@signature-params": ("@method" "@authority" "@path" "content-type" "content-digest");created=1700000000;expires=1700000060;nonce="dGVzdG5vbmNlMTIzNDU2Nw";keyid="did:key:z6Mk...";tag="autotls-reg"
 ```
 
-The `Signature-Input` and `Signature` headers MUST each appear exactly once and
-carry exactly one signature, labeled `sig1`; the server rejects any other label
-and any additional signature:
+The registration signature MUST be labeled `sig1`. A request MAY carry other
+signatures under different labels (for example one a generic RFC 9421 tool
+adds); the server verifies only `sig1` and ignores the rest.
 
 ```
 Signature-Input: sig1=("@method" "@authority" "@path" "content-type" "content-digest");created=1700000000;expires=1700000060;nonce="dGVzdG5vbmNlMTIzNDU2Nw";keyid="did:key:z6Mk...";tag="autotls-reg"
@@ -265,7 +265,7 @@ client that needs to tell classes apart SHOULD match on the whole `type` URI
 | `400` | `unexpected-query`<a id="unexpected-query"></a> | The request carries a query string. |
 | `400` | `malformed-body`<a id="malformed-body"></a> | The `Content-Type` is not `application/json`, the body is not the JSON object above, has unknown fields, or has trailing data. |
 | `400` | `malformed-value`<a id="malformed-value"></a> | `value` is not unpadded base64url of a 32-byte SHA-256 digest. |
-| `400` | `malformed-signature`<a id="malformed-signature"></a> | The request does not conform to this profile: unparseable signature headers, a label other than `sig1`, covered components other than the exact list above, an unknown signature parameter, an `alg` other than `ed25519`, a bad `did:key`, a `nonce` that is not unpadded base64url of at least 128 bits, a missing `created` or `expires`, `expires - created` over 300 seconds, or a `Content-Digest` that is malformed or does not match the body. |
+| `400` | `malformed-signature`<a id="malformed-signature"></a> | The request does not conform to this profile: unparseable signature headers, no `sig1` signature, covered components other than the exact list above, an unknown signature parameter, an `alg` other than `ed25519`, a bad `did:key`, a `nonce` that is not unpadded base64url of at least 128 bits, a missing `created` or `expires`, `expires - created` over 300 seconds, or a `Content-Digest` that is malformed or does not match the body. |
 | `401` | `signature-invalid`<a id="signature-invalid"></a> | Signature verification failed, a required component is not covered, the clock window is violated, or `@authority` is not the registration domain. |
 | `403` | `denylisted`<a id="denylisted"></a> | The client IP or a submitted origin's IP is denylisted. |
 | `413` | `body-too-large`<a id="body-too-large"></a> | The body exceeds 8 KiB. |

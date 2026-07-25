@@ -128,17 +128,17 @@ func verifyV2Request(r *http.Request, body []byte, domain string) (*v2Verified, 
 	return &v2Verified{peerID: peerID, keyID: *details.KeyID, pub: ed25519.PublicKey(raw)}, nil
 }
 
-// enforceV2Envelope rejects signature headers that stray from the closed /v2
-// grammar before any cryptography runs: exactly one signature, labeled sig1,
-// covering exactly the profile components in order, with no per-component
-// parameters. The library alone would accept any label, extra components, and
-// any order.
+// enforceV2Envelope checks the sig1 signature against the closed /v2 grammar
+// before any cryptography runs: it must cover exactly the profile components in
+// order, with no per-component parameters. A request MAY carry other signatures
+// under different labels; the server verifies only sig1 and ignores the rest,
+// so a generic RFC 9421 tool that adds its own signature still interoperates.
 func enforceV2Envelope(r *http.Request) error {
-	coverage, err := singleSigMember(r, "Signature-Input")
+	coverage, err := sig1Member(r, "Signature-Input")
 	if err != nil {
 		return err
 	}
-	if _, err := singleSigMember(r, "Signature"); err != nil {
+	if _, err := sig1Member(r, "Signature"); err != nil {
 		return err
 	}
 
@@ -161,20 +161,20 @@ func enforceV2Envelope(r *http.Request) error {
 	return nil
 }
 
-// singleSigMember parses the named header as an RFC 8941 dictionary and
-// returns its only member, which must be labeled sig1.
-func singleSigMember(r *http.Request, header string) (httpsfv.Member, error) {
+// sig1Member parses the named header as an RFC 8941 dictionary and returns its
+// sig1 member. Other members are allowed and ignored.
+func sig1Member(r *http.Request, header string) (httpsfv.Member, error) {
 	values := r.Header.Values(header)
-	if len(values) != 1 {
-		return nil, fmt.Errorf("%w: expected exactly one %s header", errMalformed, header)
+	if len(values) == 0 {
+		return nil, fmt.Errorf("%w: missing %s header", errMalformed, header)
 	}
 	dict, err := httpsfv.UnmarshalDictionary(values)
 	if err != nil {
 		return nil, fmt.Errorf("%w: parsing %s: %w", errMalformed, header, err)
 	}
-	if names := dict.Names(); len(names) != 1 || names[0] != httpsig.SigLabel {
-		return nil, fmt.Errorf("%w: %s must carry exactly one signature, labeled %q", errMalformed, header, httpsig.SigLabel)
+	member, ok := dict.Get(httpsig.SigLabel)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s has no %q signature", errMalformed, header, httpsig.SigLabel)
 	}
-	member, _ := dict.Get(httpsig.SigLabel)
 	return member, nil
 }
