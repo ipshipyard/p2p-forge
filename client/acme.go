@@ -107,7 +107,6 @@ type P2PForgeCertMgrConfig struct {
 	produceShortAddrs          bool
 	renewCheckInterval         time.Duration
 	registrationDelay          time.Duration
-	registrationAPIVersion     RegistrationAPIVersion
 }
 
 type P2PForgeCertMgrOptions func(*P2PForgeCertMgrConfig) error
@@ -168,26 +167,6 @@ func WithUserAgent(userAgent string) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
 		config.userAgent = userAgent
 		return nil
-	}
-}
-
-// WithRegistrationAPIVersion selects the forge registration API: RegistrationV1
-// (default), RegistrationV2 (RFC 9421, Ed25519 only), or RegistrationAuto (v2
-// with fallback to v1 when the endpoint is unavailable).
-//
-// In this certmagic flow the node advertises its libp2p addresses, so a v2 or
-// auto registration is verified by the forge's libp2p dialback. A forge that
-// offers only the http-ownership proof is not reachable through this option;
-// use SendChallengeV2 directly with an http(s) address to register there.
-func WithRegistrationAPIVersion(v RegistrationAPIVersion) P2PForgeCertMgrOptions {
-	return func(config *P2PForgeCertMgrConfig) error {
-		switch v {
-		case RegistrationV1, RegistrationV2, RegistrationAuto:
-			config.registrationAPIVersion = v
-			return nil
-		default:
-			return fmt.Errorf("WithRegistrationAPIVersion: unknown version %q", v)
-		}
 	}
 }
 
@@ -402,7 +381,6 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 			httpClient:                 mgrCfg.httpClient,
 			userAgent:                  mgrCfg.userAgent,
 			allowPrivateForgeAddresses: mgrCfg.allowPrivateForgeAddresses,
-			apiVersion:                 mgrCfg.registrationAPIVersion,
 			log:                        acmeLog.Named("dns01solver"),
 			resolver:                   mgrCfg.resolver,
 		},
@@ -664,7 +642,6 @@ type dns01P2PForgeSolver struct {
 	httpClient                 *http.Client
 	userAgent                  string
 	allowPrivateForgeAddresses bool
-	apiVersion                 RegistrationAPIVersion
 	log                        *zap.SugaredLogger
 	resolver                   *net.Resolver
 }
@@ -747,43 +724,14 @@ func (d *dns01P2PForgeSolver) Present(ctx context.Context, challenge acme.Challe
 	}
 	privKey := h.Peerstore().PrivKey(h.ID())
 
-	sendV1 := func() error {
-		return SendChallenge(ctx, d.forgeRegistrationEndpoint, privKey, dns01value,
-			advertisedAddrs, d.forgeAuth, d.userAgent, d.modifyForgeRequest, sendOpts...)
-	}
-	sendV2 := func() error {
-		return SendChallengeV2(ctx, d.forgeRegistrationEndpoint, privKey, dns01value,
-			advertisedAddrs, d.forgeAuth, d.userAgent, d.modifyForgeRequest, sendOpts...)
-	}
-
-	if err := d.register(isEd25519(privKey), sendV1, sendV2); err != nil {
+	// This solver drives /v1 (libp2p PeerID-auth + dialback), which is what a
+	// libp2p host with multiaddrs needs. /v2 is HTTP-only and reached through
+	// SendChallengeV2 with an origin, not this libp2p flow.
+	if err := SendChallenge(ctx, d.forgeRegistrationEndpoint, privKey, dns01value,
+		advertisedAddrs, d.forgeAuth, d.userAgent, d.modifyForgeRequest, sendOpts...); err != nil {
 		return fmt.Errorf("p2p-forge broker registration error: %w", err)
 	}
 	return nil
-}
-
-// register picks the registration API per d.apiVersion and runs it. In auto
-// mode it uses v2 for an Ed25519 key and falls back to v1 only when the forge
-// has no v2 endpoint (ErrV2Unsupported); any other v2 error, such as a
-// verification failure, is returned as is rather than retried on v1.
-func (d *dns01P2PForgeSolver) register(isEd25519 bool, sendV1, sendV2 func() error) error {
-	switch d.apiVersion {
-	case RegistrationV2:
-		return sendV2()
-	case RegistrationAuto:
-		if !isEd25519 {
-			d.log.Debugw("identity key is not Ed25519, using v1 registration")
-			return sendV1()
-		}
-		err := sendV2()
-		if err == nil || !errors.Is(err, ErrV2Unsupported) {
-			return err
-		}
-		d.log.Infow("v2 registration unavailable, falling back to v1", "err", err)
-		return sendV1()
-	default:
-		return sendV1()
-	}
 }
 
 func (d *dns01P2PForgeSolver) CleanUp(ctx context.Context, challenge acme.Challenge) error {

@@ -19,22 +19,8 @@ import (
 	"github.com/yaronf/httpsign"
 )
 
-// RegistrationAPIVersion selects which forge registration API the client uses.
-type RegistrationAPIVersion string
-
-const (
-	// RegistrationV1 uses the libp2p PeerID-auth handshake (/v1).
-	RegistrationV1 RegistrationAPIVersion = "v1"
-	// RegistrationV2 uses RFC 9421 request signatures (/v2). Requires an
-	// Ed25519 identity key.
-	RegistrationV2 RegistrationAPIVersion = "v2"
-	// RegistrationAuto tries /v2 for Ed25519 keys and falls back to /v1 when
-	// the endpoint is unavailable.
-	RegistrationAuto RegistrationAPIVersion = "auto"
-)
-
 // ErrV2Unsupported reports that the forge does not expose the /v2 endpoint, so
-// a caller may fall back to /v1.
+// a caller can tell a missing endpoint from a rejected registration.
 var ErrV2Unsupported = errors.New("v2 registration endpoint not available")
 
 // SendChallengeV2 submits the DNS-01 challenge value to the forge /v2 endpoint,
