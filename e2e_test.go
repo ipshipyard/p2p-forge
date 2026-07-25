@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
@@ -18,6 +19,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -327,16 +329,33 @@ func TestSetACMEChallengeV2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	h, err := libp2p.New(libp2p.Identity(sk))
+	raw, err := sk.Raw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signingKey, err := client.NewEd25519SigningKey(ed25519.PrivateKey(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := peer.IDFromPublicKey(sk.GetPublic())
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	// The node serves its ownership proof at a local origin the forge fetches.
+	mux := http.NewServeMux()
+	proofSrv := httptest.NewServer(mux)
+	defer proofSrv.Close()
+	proofHandler, err := client.OwnershipProofHandler(signingKey, proofSrv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux.Handle("/", proofHandler)
+
 	testDigest := sha256.Sum256([]byte("test-v2"))
 	testChallenge := base64.RawURLEncoding.EncodeToString(testDigest[:])
 
-	err = client.SendChallengeV2(ctx, fmt.Sprintf("http://127.0.0.1:%d", testInfra.HTTPPort), sk, testChallenge, h.Addrs(), authToken, "", func(req *http.Request) error {
+	err = client.SendChallengeV2(ctx, fmt.Sprintf("http://127.0.0.1:%d", testInfra.HTTPPort), signingKey, testChallenge, []string{proofSrv.URL}, authToken, "", func(req *http.Request) error {
 		req.Host = forgeRegistration
 		return nil
 	})
@@ -344,7 +363,7 @@ func TestSetACMEChallengeV2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	peerIDb36, err := peer.ToCid(h.ID()).StringOfBase(multibase.Base36)
+	peerIDb36, err := peer.ToCid(pid).StringOfBase(multibase.Base36)
 	if err != nil {
 		t.Fatal(err)
 	}

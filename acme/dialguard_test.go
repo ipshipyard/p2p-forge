@@ -62,8 +62,9 @@ func TestVetDestIP(t *testing.T) {
 	}
 }
 
-// TestVettingRejectsPrivate confirms the probe refuses a loopback/private
-// target when vetting is on (AllowPrivateAddrs=false), rather than dialing it.
+// TestVettingRejectsPrivate confirms the ownership fetch refuses a
+// loopback/private origin when vetting is on (AllowPrivateAddrs=false), rather
+// than connecting to it.
 func TestVettingRejectsPrivate(t *testing.T) {
 	initMetrics()
 	_, priv := newRegistrantHost(t)
@@ -72,10 +73,10 @@ func TestVettingRejectsPrivate(t *testing.T) {
 	c.AllowPrivateAddrs = false // enable vetting
 
 	value := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x01}, 32))
-	req := signedV2Request(t, priv, value, []string{"/ip4/127.0.0.1/tcp/4001", "/ip4/10.0.0.1/tcp/4001"})
+	req := signedV2Request(t, priv, value, []string{"http://127.0.0.1:8080", "http://10.0.0.1:8080"})
 	rec := httptest.NewRecorder()
 	c.handleV2Challenge(rec, req)
-	// No public address survives vetting, so the probe fails: 422.
+	// No public origin survives vetting, so verification fails: 422.
 	require.Equal(t, 422, rec.Code, rec.Body.String())
 }
 

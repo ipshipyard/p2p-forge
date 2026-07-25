@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"strings"
 	"time"
 
 	"github.com/ipshipyard/p2p-forge/client"
@@ -27,58 +26,28 @@ const (
 	// headers, so the body is empty; the cap guards against a hostile node).
 	ownershipBodyLimit = 8 << 10
 	// maxOwnershipOrigins caps how many origins one request may present.
-	maxOwnershipOrigins = 8
+	maxOwnershipOrigins = 4
 	// overallVerifyTimeout bounds all reachability work for one registration,
 	// so a request cannot pin the forge on slow endpoints across many fetches.
 	overallVerifyTimeout = 45 * time.Second
 )
 
-// verifyReachable proves the peer controls a submitted address, trying the
-// no-libp2p http-ownership proof first and falling back to the libp2p dialback.
-// It returns the verification mode that succeeded.
-func (c *acmeWriter) verifyReachable(ctx context.Context, v *v2Verified, addrs []string, userAgent string) (string, error) {
+// verifyReachable proves the peer controls a submitted origin via the
+// HTTP-BROKERED-DNS-01 challenge (an ownership proof the forge fetches). It
+// returns the challenge that succeeded.
+func (c *acmeWriter) verifyReachable(ctx context.Context, v *v2Verified, origins []string) (string, error) {
 	if !c.AllowPrivateAddrs {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, overallVerifyTimeout)
 		defer cancel()
 	}
-
-	httpURLs, libp2pAddrs := partitionAddrs(addrs)
-
-	var lastErr error
-	if len(httpURLs) > 0 {
-		if err := c.verifyHTTPOwnership(ctx, v.pub, v.keyID, httpURLs); err == nil {
-			return "http-ownership", nil
-		} else {
-			lastErr = err
-		}
+	if len(origins) == 0 {
+		return "", errors.New("no origin submitted")
 	}
-	if len(libp2pAddrs) > 0 {
-		if err := c.testAddresses(ctx, v.peerID, libp2pAddrs, userAgent); err == nil {
-			return "libp2p-dialback", nil
-		} else {
-			lastErr = err
-		}
+	if err := c.verifyHTTPOwnership(ctx, v.pub, v.keyID, origins); err != nil {
+		return "", err
 	}
-	if lastErr == nil {
-		lastErr = errors.New("no verifiable address submitted")
-	}
-	return "", lastErr
-}
-
-// partitionAddrs splits submitted addresses into http(s) server URLs (verified
-// by ownership proof) and everything else (verified by libp2p dialback).
-// Schemes are case-insensitive (RFC 3986); CanonicalOrigin lowercases later.
-func partitionAddrs(addrs []string) (httpURLs, libp2pAddrs []string) {
-	for _, a := range addrs {
-		lower := strings.ToLower(a)
-		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
-			httpURLs = append(httpURLs, a)
-		} else {
-			libp2pAddrs = append(libp2pAddrs, a)
-		}
-	}
-	return httpURLs, libp2pAddrs
+	return "HTTP-BROKERED-DNS-01", nil
 }
 
 // verifyHTTPOwnership tries each submitted origin until one serves a valid

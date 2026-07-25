@@ -121,7 +121,7 @@ func TestV2HTTPOwnershipEndToEnd(t *testing.T) {
 
 	var resp v2Response
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Equal(t, "http-ownership", resp.Verification)
+	require.Equal(t, "HTTP-BROKERED-DNS-01", resp.Challenge)
 }
 
 func TestCanonicalOrigin(t *testing.T) {

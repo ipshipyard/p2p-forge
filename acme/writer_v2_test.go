@@ -53,8 +53,8 @@ func newRegistrantHost(t *testing.T) (host.Host, crypto.PrivKey) {
 	return h, priv
 }
 
-func signedV2Request(t *testing.T, priv crypto.PrivKey, value string, addrs []string) *http.Request {
-	return signedV2RequestOpts(t, priv, value, addrs, v2SignOpts{})
+func signedV2Request(t *testing.T, priv crypto.PrivKey, value string, origins []string) *http.Request {
+	return signedV2RequestOpts(t, priv, value, origins, v2SignOpts{})
 }
 
 // v2SignOpts tweaks how signedV2RequestOpts signs so tests can produce
@@ -68,9 +68,9 @@ type v2SignOpts struct {
 	components  []string      // nil means httpsig.RegistrationComponents
 }
 
-func signedV2RequestOpts(t *testing.T, priv crypto.PrivKey, value string, addrs []string, opts v2SignOpts) *http.Request {
+func signedV2RequestOpts(t *testing.T, priv crypto.PrivKey, value string, origins []string, opts v2SignOpts) *http.Request {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{"value": value, "addresses": addrs})
+	body, err := json.Marshal(map[string]any{"value": value, "origins": origins})
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, "https://"+v2TestDomain+"/v2/_acme-challenge", bytes.NewReader(body))
 	req.Host = v2TestDomain
@@ -144,11 +144,13 @@ func newTestWriter() *acmeWriter {
 // repeats the same registration and changes nothing.
 func TestV2ResubmitIsIdempotent(t *testing.T) {
 	initMetrics()
-	h, priv := newRegistrantHost(t)
+	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+	srv, _ := newProofServer(t, priv)
 	c := newTestWriter()
 
 	value := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x05}, 32))
-	signed := signedV2Request(t, priv, value, addrStrings(h))
+	signed := signedV2Request(t, priv, value, []string{srv.URL})
 	body, err := io.ReadAll(signed.Body)
 	require.NoError(t, err)
 	header := signed.Header.Clone()
@@ -168,11 +170,13 @@ func TestV2ResubmitIsIdempotent(t *testing.T) {
 
 func TestV2ChallengeHandlerRoundTrip(t *testing.T) {
 	initMetrics()
-	h, priv := newRegistrantHost(t)
+	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+	srv, _ := newProofServer(t, priv)
 	c := newTestWriter()
 
 	value := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0xab}, 32))
-	req := signedV2Request(t, priv, value, addrStrings(h))
+	req := signedV2Request(t, priv, value, []string{srv.URL})
 	rec := httptest.NewRecorder()
 
 	c.handleV2Challenge(rec, req)
@@ -190,7 +194,7 @@ func TestV2ChallengeHandlerRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Equal(t, wantDID, resp.DID)
 	require.Contains(t, resp.Name, ".libp2p.direct")
-	require.Equal(t, "libp2p-dialback", resp.Verification)
+	require.Equal(t, "HTTP-BROKERED-DNS-01", resp.Challenge)
 }
 
 func TestV2ChallengeHandlerRejects(t *testing.T) {
@@ -377,10 +381,10 @@ func TestV2ChallengeHandlerRejects(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 
-	t.Run("unreachable address", func(t *testing.T) {
+	t.Run("unreachable origin", func(t *testing.T) {
 		_, priv := newRegistrantHost(t)
-		// A well-formed but dead address: nothing listens here.
-		req := signedV2Request(t, priv, value, []string{"/ip4/127.0.0.1/tcp/1"})
+		// A well-formed but dead origin: nothing listens here.
+		req := signedV2Request(t, priv, value, []string{"http://127.0.0.1:1"})
 		rec := httptest.NewRecorder()
 		newTestWriter().handleV2Challenge(rec, req)
 		require.Equal(t, http.StatusUnprocessableEntity, rec.Code)

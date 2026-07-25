@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -139,10 +140,19 @@ func renderChallengeError(resp *http.Response, registrationURL string) error {
 //
 // Sending the request to the DNS server requires performing HTTP PeerID Authentication for the corresponding peerID
 func ChallengeRequest(ctx context.Context, registrationURL string, challenge string, addrs []multiaddr.Multiaddr) (*http.Request, error) {
-	// Shared with the v2 client so the two wire bodies cannot drift apart.
-	body, err := marshalChallengeBody(challenge, addrs)
+	maStrs := make([]string, len(addrs))
+	for i, addr := range addrs {
+		maStrs[i] = addr.String()
+	}
+	body, err := json.Marshal(&struct {
+		Value     string   `json:"value"`
+		Addresses []string `json:"addresses"`
+	}{
+		Value:     challenge,
+		Addresses: maStrs,
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("marshaling challenge body: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", registrationURL, bytes.NewReader(body))

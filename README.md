@@ -236,9 +236,9 @@ reachable endpoint. There are two registration APIs:
   reachability with a libp2p dialback. It requires a libp2p client. The
   client-facing flow is specified in the libp2p [AutoTLS client spec](https://github.com/libp2p/specs/blob/master/tls/autotls-client.md).
 - **`/v2`** authenticates with HTTP Message Signatures (RFC 9421) over an
-  Ed25519 `did:key`, so any HTTP client can register without libp2p. Reachability
-  is proven either by a signed proof served over HTTP or by a libp2p dialback.
-  See [docs/registration-v2.md](docs/registration-v2.md).
+  Ed25519 `did:key`, so any HTTP client can register without libp2p.
+  Reachability is proven with a signed proof the forge fetches over HTTP. See
+  [docs/registration-v2.md](docs/registration-v2.md).
 
 Both APIs write the same DNS-01 record and run side by side.
 

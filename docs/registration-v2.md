@@ -31,9 +31,9 @@ Two independent checks gate a registration:
    own `*.<peerid>.libp2p.direct` name. This is the security-critical property,
    and the server MUST verify the signature before it acts on the request.
 2. **A real, reachable endpoint.** The caller MUST prove control of a public
-   endpoint, either by serving a signed proof over HTTP (below) or by answering
-   a libp2p dial. This is anti-abuse: it keeps the forge from minting certs for
-   keys that run nothing. It does not scope the cert.
+   HTTP origin by serving a signed proof the forge fetches (below). This is
+   anti-abuse: it keeps the forge from minting certs for keys that run nothing.
+   It does not scope the cert.
 
 The `<peerid>` never travels on the wire in `/v2`; requests and the success
 response carry a `did:key` instead. The base36 peerid appears only in the DNS
@@ -140,14 +140,14 @@ base.
 ```json
 {
   "value": "<base64url of a 32-byte SHA-256 digest, RFC 8555 section 8.4>",
-  "addresses": ["<multiaddr or http(s) URL>", "..."]
+  "origins": ["<http(s) origin>", "..."]
 }
 ```
 
 The request MUST carry `Content-Type: application/json` (media-type parameters
 such as `charset` are ignored). The body MUST be at most 8 KiB. The server MUST
-reject unknown JSON fields and trailing data. `addresses` tells the forge where
-to prove reachability (below).
+reject unknown JSON fields and trailing data. `origins` lists the public
+`http(s)` origins where the node serves its ownership proof (below).
 
 ### Success
 
@@ -157,7 +157,7 @@ to prove reachability (below).
 {
   "did": "did:key:z6Mk...",
   "name": "*.<peerid-b36>.libp2p.direct",
-  "verification": "http-ownership",
+  "challenge": "HTTP-BROKERED-DNS-01",
   "expiresIn": 3600
 }
 ```
@@ -166,33 +166,30 @@ to prove reachability (below).
 | --- | --- |
 | `did` | The `did:key` that registered, echoed back. |
 | `name` | The wildcard cert name the peer can now get. |
-| `verification` | Which check passed: `http-ownership` or `libp2p-dialback`. |
+| `challenge` | The challenge that passed. Always `HTTP-BROKERED-DNS-01` today. |
 | `expiresIn` | Seconds from now until the forge expires the stored challenge value. This is not the DNS TTL of the TXT record. This is how long we serve the value. |
 
 ## Proving reachability
 
-A registration MUST prove control of at least one address in the body. Two
-verification modes exist. A server MUST support at least one; it SHOULD support
-http-ownership, the libp2p-free path, and it MAY support libp2p-dialback. An
-implementation MAY omit the dialback entirely to avoid a dependency on the libp2p
-stack.
+A registration MUST prove control of at least one `origin` in the body. `/v2` is
+pure HTTP: the forge proves it by fetching a signed proof over HTTP, with no
+libp2p. A node that speaks only libp2p uses `/v1` instead, whose dialback
+authenticates the peer over a libp2p connection.
 
-A client that wants to stay off libp2p SHOULD provide at least one `http(s)`
-address and serve the ownership proof. A client MAY provide libp2p multiaddrs,
-but MUST NOT assume that a given server supports the dialback.
+The forge tries the submitted origins in order and stops at the first that
+proves ownership. It considers at most the first 4 and ignores the rest, so
+clients SHOULD lead with the origin most likely to verify. One origin is
+typical; a node may list more, for example a separate IPv4 and IPv6 hostname.
 
-The forge tries the addresses in the body. It verifies an `http://` or
-`https://` address with the ownership proof, and treats anything else as a
-libp2p multiaddr to dial (where the dialback is supported). It tries the
-ownership proof first, and falls back to the dialback if that is absent or
-fails.
+### HTTP-BROKERED-DNS-01
 
-The forge bounds the work per registration: it considers at most the first 8
-`http(s)` addresses and at most the first 32 multiaddrs (relay addresses are
-skipped without counting), and ignores the rest. Clients SHOULD lead with the
-addresses most likely to verify.
-
-### http-ownership (no libp2p)
+This challenge is analogous to ACME's
+[`HTTP-01`](https://letsencrypt.org/docs/challenge-types/#http-01-challenge):
+the verifier fetches a key-bound artifact from a well-known HTTP path. It is
+"brokered" because the forge, not the CA, performs it, then translates a
+successful check into the `DNS-01` record it publishes for the node. That
+indirection is the point: a NATed libp2p node cannot run `HTTP-01` or `DNS-01`
+for a `libp2p.direct` name itself.
 
 The node serves an ownership proof at the key-scoped path below. The forge
 fetches it with a `POST` and the node answers with an RFC 9421-signed response,
@@ -255,19 +252,6 @@ Notes for operators of the endpoint:
   authenticity comes from its signature plus the pinned IP, not from the
   transport.
 
-### libp2p-dialback
-
-Support for this mode is OPTIONAL. It exists so nodes that already speak libp2p
-can register with no HTTP endpoint to serve, but a forge MAY implement only
-http-ownership and skip the libp2p stack entirely.
-
-For a libp2p multiaddr, the forge opens a libp2p connection to the peer and the
-transport handshake authenticates the `<peerid>`. This works for QUIC-v1; TCP or
-WS or WSS with Yamux and TLS or Noise; and WebTransport, plus the
-[Identify protocol](https://github.com/libp2p/specs/tree/master/identify). A
-forge that supports this mode MUST resolve and pin the address IPs, MUST refuse
-non-public targets, and MUST bound the dial with a timeout.
-
 ## Errors
 
 The server SHOULD return [problem+json (RFC 9457)](https://www.rfc-editor.org/rfc/rfc9457)
@@ -283,9 +267,9 @@ client that needs to tell classes apart SHOULD match on the whole `type` URI
 | `400` | `malformed-value`<a id="malformed-value"></a> | `value` is not unpadded base64url of a 32-byte SHA-256 digest. |
 | `400` | `malformed-signature`<a id="malformed-signature"></a> | The request does not conform to this profile: unparseable signature headers, a label other than `sig1`, covered components other than the exact list above, an unknown signature parameter, an `alg` other than `ed25519`, a bad `did:key`, a `nonce` that is not unpadded base64url of at least 128 bits, a missing `created` or `expires`, `expires - created` over 300 seconds, or a `Content-Digest` that is malformed or does not match the body. |
 | `401` | `signature-invalid`<a id="signature-invalid"></a> | Signature verification failed, a required component is not covered, the clock window is violated, or `@authority` is not the registration domain. |
-| `403` | `denylisted`<a id="denylisted"></a> | The client IP or a submitted address is denylisted. |
+| `403` | `denylisted`<a id="denylisted"></a> | The client IP or a submitted origin's IP is denylisted. |
 | `413` | `body-too-large`<a id="body-too-large"></a> | The body exceeds 8 KiB. |
-| `422` | `verification-failed`<a id="verification-failed"></a> | No submitted address could be verified. |
+| `422` | `verification-failed`<a id="verification-failed"></a> | No submitted origin could be verified. |
 | `500` | `misconfigured`<a id="misconfigured"></a>, `storage-error`<a id="storage-error"></a> | Server-side failure; safe to retry later. |
 
 A fronting proxy or implementation-specific access control may add statuses
@@ -299,9 +283,9 @@ denied.
 - **Replay.** The server does not track nonces, so a captured request can be
   resubmitted until its `expires` passes. This is accepted: the signature
   binds the whole request, so a replay can only repeat it, re-verifying the
-  same addresses and re-writing the same TXT value. The `nonce` keeps every
+  same origins and re-writing the same TXT value. The `nonce` keeps every
   signature unique, and a server MAY additionally reject reused nonces.
-- **Denylist** applies to the client IP and to every resolved endpoint IP. The
+- **Denylist** applies to the client IP and to every resolved origin IP. The
   forge MUST NOT trust a leftmost `X-Forwarded-For` for the client IP, which any
   client can forge; it trusts only the direct connection address plus, when the
   operator configures one, a proxy header (see `client-ip-header`).
@@ -313,9 +297,9 @@ full syntax):
 
 - `allow-private-addresses=true` (an argument on the `registration-domain`
   line) turns off every reachability safeguard: destination-IP vetting, the
-  address caps, the dialback IP pinning, and the verification timeouts. Off by
-  default. Use it only for local testing or a private deployment that trusts
-  the submitted addresses. Never enable it on a public instance.
+  origin cap, and the fetch timeouts. Off by default. Use it only for local
+  testing or a private deployment that trusts the submitted origins. Never
+  enable it on a public instance.
 - `client-ip-header <name>` names the header the fronting proxy sets with the
   real client IP (for example `CF-Connecting-IP` behind Cloudflare), used for
   the denylist. The value may be a bare IP or `ip:port`. It MUST be a

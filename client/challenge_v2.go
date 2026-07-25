@@ -3,20 +3,10 @@ package client
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"time"
-
-	"github.com/ipshipyard/p2p-forge/internal/httpsig"
-	"github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/multiformats/go-multiaddr"
-	"github.com/yaronf/httpsign"
 )
 
 // ErrV2Unsupported reports that the forge does not expose the /v2 endpoint, so
@@ -24,9 +14,12 @@ import (
 var ErrV2Unsupported = errors.New("v2 registration endpoint not available")
 
 // SendChallengeV2 submits the DNS-01 challenge value to the forge /v2 endpoint,
-// authenticated by a single RFC 9421 request signature over the peer's Ed25519
-// key. Unlike v1 it is one request: no PeerID-auth handshake, no cookie jar.
-func SendChallengeV2(ctx context.Context, baseURL string, privKey crypto.PrivKey, challenge string, addrs []multiaddr.Multiaddr, forgeAuth string, userAgent string, modifyForgeRequest func(r *http.Request) error, opts ...SendChallengeOption) error {
+// authenticated by a single RFC 9421 request signature over key. Unlike v1 it
+// is one HTTP request with no libp2p: no PeerID-auth handshake, no cookie jar,
+// no multiaddrs. origins lists the node's public HTTP origins where it serves
+// the ownership proof (see OwnershipProofHandler); the forge fetches the proof
+// from one of them.
+func SendChallengeV2(ctx context.Context, baseURL string, key SigningKey, challenge string, origins []string, forgeAuth string, userAgent string, modifyForgeRequest func(r *http.Request) error, opts ...SendChallengeOption) error {
 	o := sendChallengeOptions{}
 	for _, opt := range opts {
 		if err := opt(&o); err != nil {
@@ -35,7 +28,7 @@ func SendChallengeV2(ctx context.Context, baseURL string, privKey crypto.PrivKey
 	}
 
 	registrationURL := fmt.Sprintf("%s/v2/_acme-challenge", baseURL)
-	body, err := marshalChallengeBody(challenge, addrs)
+	body, err := marshalV2Body(challenge, origins)
 	if err != nil {
 		return err
 	}
@@ -51,7 +44,7 @@ func SendChallengeV2(ctx context.Context, baseURL string, privKey crypto.PrivKey
 		return err
 	}
 
-	if err := signV2Request(req, privKey, body); err != nil {
+	if err := key.signRequest(req, body); err != nil {
 		return err
 	}
 
@@ -66,7 +59,7 @@ func SendChallengeV2(ctx context.Context, baseURL string, privKey crypto.PrivKey
 	defer resp.Body.Close()
 
 	// A forge without /v2 answers 404 (path absent) or 405 (v1-only mux); map
-	// those to ErrV2Unsupported so a caller can fall back to /v1.
+	// those to ErrV2Unsupported so a caller can tell it apart from a rejection.
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
 		return fmt.Errorf("%w: %s", ErrV2Unsupported, resp.Status)
 	}
@@ -76,85 +69,16 @@ func SendChallengeV2(ctx context.Context, baseURL string, privKey crypto.PrivKey
 	return nil
 }
 
-func marshalChallengeBody(challenge string, addrs []multiaddr.Multiaddr) ([]byte, error) {
-	maStrs := make([]string, len(addrs))
-	for i, addr := range addrs {
-		maStrs[i] = addr.String()
-	}
+func marshalV2Body(challenge string, origins []string) ([]byte, error) {
 	body, err := json.Marshal(&struct {
-		Value     string   `json:"value"`
-		Addresses []string `json:"addresses"`
+		Value   string   `json:"value"`
+		Origins []string `json:"origins"`
 	}{
-		Value:     challenge,
-		Addresses: maStrs,
+		Value:   challenge,
+		Origins: origins,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshaling challenge body: %w", err)
 	}
 	return body, nil
-}
-
-// isEd25519 reports whether k is an Ed25519 key, the only type /v2 accepts.
-// It checks the key's Type() rather than a concrete Go type, so a wrapped or
-// delegated Ed25519 key is still recognized.
-func isEd25519(k crypto.PrivKey) bool {
-	return k.Type() == crypto.Ed25519
-}
-
-// signV2Request signs req in place for the /v2 profile: an RFC 9421 signature
-// (via yaronf/httpsign) over the fixed components, plus an RFC 9530
-// Content-Digest over body.
-func signV2Request(req *http.Request, privKey crypto.PrivKey, body []byte) error {
-	if !isEd25519(privKey) {
-		return fmt.Errorf("v2 registration requires an Ed25519 key")
-	}
-	raw, err := privKey.Raw()
-	if err != nil {
-		return fmt.Errorf("reading private key: %w", err)
-	}
-	keyID, err := httpsig.EncodeDIDKey(privKey.GetPublic())
-	if err != nil {
-		return err
-	}
-	nonce, err := generateNonce()
-	if err != nil {
-		return err
-	}
-
-	digestBody := io.NopCloser(bytes.NewReader(body))
-	cd, err := httpsign.GenerateContentDigestHeader(&digestBody, []string{httpsign.DigestSha256})
-	if err != nil {
-		return fmt.Errorf("generating content-digest: %w", err)
-	}
-	req.Header.Set("Content-Digest", cd)
-
-	// SignAlg(false) keeps the wire minimal: the key in keyid decides the
-	// algorithm, and the server rejects any alg other than ed25519.
-	cfg := httpsign.NewSignConfig().
-		SignAlg(false).
-		SignCreated(true).
-		SetExpires(time.Now().Add(httpsig.MaxSignatureLifetime).Unix()).
-		SetNonce(nonce).
-		SetKeyID(keyID).
-		SetTag(httpsig.RegistrationTag)
-	signer, err := httpsign.NewEd25519Signer(ed25519.PrivateKey(raw), cfg, httpsign.Headers(httpsig.RegistrationComponents...))
-	if err != nil {
-		return fmt.Errorf("building signer: %w", err)
-	}
-	sigInput, sig, err := httpsign.SignRequest(httpsig.SigLabel, *signer, req)
-	if err != nil {
-		return fmt.Errorf("signing v2 registration request: %w", err)
-	}
-	req.Header.Set("Signature-Input", sigInput)
-	req.Header.Set("Signature", sig)
-	return nil
-}
-
-// generateNonce returns a fresh base64url nonce with 128 bits of entropy.
-func generateNonce() (string, error) {
-	b := make([]byte, httpsig.MinNonceBytes)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("generating nonce: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
 }

@@ -3,23 +3,31 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"io"
 	"net/http"
 	"testing"
 
-	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/stretchr/testify/require"
 )
 
-func TestIsEd25519(t *testing.T) {
-	ed, _, err := crypto.GenerateEd25519Key(rand.Reader)
+// testSigningKey returns a fresh Ed25519 SigningKey for tests.
+func testSigningKey(t *testing.T) SigningKey {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	require.True(t, isEd25519(ed))
+	k, err := NewEd25519SigningKey(priv)
+	require.NoError(t, err)
+	return k
+}
 
-	secp, _, err := crypto.GenerateSecp256k1Key(rand.Reader)
-	require.NoError(t, err)
-	require.False(t, isEd25519(secp))
+func TestNewEd25519SigningKey(t *testing.T) {
+	k := testSigningKey(t)
+	require.Contains(t, k.DIDKey(), "did:key:z")
+
+	_, err := NewEd25519SigningKey(ed25519.PrivateKey("too short"))
+	require.Error(t, err)
 }
 
 // respondingClient returns an *http.Client whose transport answers every
@@ -39,14 +47,13 @@ func respondingClient(status int, body string) *http.Client {
 }
 
 func TestSendChallengeV2StatusMapping(t *testing.T) {
-	sk, _, err := crypto.GenerateEd25519Key(rand.Reader)
-	require.NoError(t, err)
+	key := testSigningKey(t)
 
 	send := func(status int, body string) error {
 		return SendChallengeV2(
 			context.Background(),
 			"http://forge.example.invalid",
-			sk, "test-challenge-value", nil,
+			key, "test-challenge-value", []string{"https://gw.example"},
 			"", "", nil,
 			WithChallengeHTTPClient(respondingClient(status, body)),
 		)
@@ -62,21 +69,9 @@ func TestSendChallengeV2StatusMapping(t *testing.T) {
 		require.ErrorIs(t, send(http.StatusMethodNotAllowed, "nope"), ErrV2Unsupported)
 	})
 	t.Run("422 surfaces the body, not ErrV2Unsupported", func(t *testing.T) {
-		err := send(http.StatusUnprocessableEntity, "no address verified")
+		err := send(http.StatusUnprocessableEntity, "no origin verified")
 		require.Error(t, err)
 		require.NotErrorIs(t, err, ErrV2Unsupported)
-		require.ErrorContains(t, err, "no address verified")
+		require.ErrorContains(t, err, "no origin verified")
 	})
-}
-
-func TestSendChallengeV2RejectsNonEd25519(t *testing.T) {
-	secp, _, err := crypto.GenerateSecp256k1Key(rand.Reader)
-	require.NoError(t, err)
-	err = SendChallengeV2(
-		context.Background(),
-		"http://forge.example.invalid",
-		secp, "test-challenge-value", nil,
-		"", "", nil,
-	)
-	require.ErrorContains(t, err, "Ed25519")
 }

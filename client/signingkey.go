@@ -3,6 +3,8 @@ package client
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,6 +36,51 @@ func NewEd25519SigningKey(priv ed25519.PrivateKey) (SigningKey, error) {
 
 // DIDKey returns the did:key identifier the forge derives identity from.
 func (k SigningKey) DIDKey() string { return k.didKey }
+
+// signRequest signs req in place for the /v2 registration profile: an RFC 9421
+// signature over the fixed components plus an RFC 9530 Content-Digest over body.
+func (k SigningKey) signRequest(req *http.Request, body []byte) error {
+	nonce, err := generateNonce()
+	if err != nil {
+		return err
+	}
+	digestBody := io.NopCloser(bytes.NewReader(body))
+	cd, err := httpsign.GenerateContentDigestHeader(&digestBody, []string{httpsign.DigestSha256})
+	if err != nil {
+		return fmt.Errorf("generating content-digest: %w", err)
+	}
+	req.Header.Set("Content-Digest", cd)
+
+	// SignAlg(false) keeps the wire minimal: the key in keyid decides the
+	// algorithm, and the server rejects any alg other than ed25519.
+	cfg := httpsign.NewSignConfig().
+		SignAlg(false).
+		SignCreated(true).
+		SetExpiresAfter(int64(httpsig.MaxSignatureLifetime / time.Second)).
+		SetNonce(nonce).
+		SetKeyID(k.didKey).
+		SetTag(httpsig.RegistrationTag)
+	signer, err := httpsign.NewEd25519Signer(k.priv, cfg, httpsign.Headers(httpsig.RegistrationComponents...))
+	if err != nil {
+		return fmt.Errorf("building signer: %w", err)
+	}
+	sigInput, sig, err := httpsign.SignRequest(httpsig.SigLabel, *signer, req)
+	if err != nil {
+		return fmt.Errorf("signing v2 registration request: %w", err)
+	}
+	req.Header.Set("Signature-Input", sigInput)
+	req.Header.Set("Signature", sig)
+	return nil
+}
+
+// generateNonce returns a fresh base64url nonce with 128 bits of entropy.
+func generateNonce() (string, error) {
+	b := make([]byte, httpsig.MinNonceBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generating nonce: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
 
 // signOwnershipResponse writes an RFC 9421-signed 200 response proving this key
 // controls origin (an RFC 6454 origin). The origin travels in the body, bound

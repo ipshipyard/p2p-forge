@@ -108,18 +108,13 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if blocked, reason := denylistAddresses(typedBody.Addresses); blocked {
-		writeProblem(w, http.StatusForbidden, "denylisted", reason)
-		return
-	}
-
-	// Prove the key controls a real, reachable endpoint: the http-ownership
-	// proof (no libp2p) when an http(s) address is given, else the libp2p
-	// dialback.
-	mode, err := c.verifyReachable(r.Context(), verified, typedBody.Addresses, r.Header.Get("User-Agent"))
+	// Prove the key controls a real, reachable endpoint via the
+	// HTTP-BROKERED-DNS-01 challenge. The submitted origins are denylist-checked
+	// at fetch time, on their resolved IPs.
+	challenge, err := c.verifyReachable(r.Context(), verified, typedBody.Origins)
 	if err != nil {
-		log.Debugf("v2: address verification failed for %s: %v", peerID, err)
-		writeProblem(w, http.StatusUnprocessableEntity, "verification-failed", "no submitted address could be verified")
+		log.Debugf("v2: http origin server verification failed for %s: %v", peerID, err)
+		writeProblem(w, http.StatusUnprocessableEntity, "verification-failed", "no submitted origin could be verified")
 		return
 	}
 
@@ -130,10 +125,10 @@ func (c *acmeWriter) handleV2Challenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, v2Response{
-		DID:          verified.keyID,
-		Name:         certWildcard(peerID, c.ForgeDomain),
-		Verification: mode,
-		ExpiresIn:    int(challengeTTL / time.Second),
+		DID:       verified.keyID,
+		Name:      certWildcard(peerID, c.ForgeDomain),
+		Challenge: challenge,
+		ExpiresIn: int(challengeTTL / time.Second),
 	})
 }
 
@@ -145,18 +140,26 @@ type v2Response struct {
 	DID string `json:"did"`
 	// Name is the wildcard cert name; peerid-b36 belongs to the DNS/cert layer.
 	Name string `json:"name"`
-	// Verification is the mode that proved reachability: "http-ownership" or
-	// "libp2p-dialback".
-	Verification string `json:"verification"`
+	// Challenge is the reachability challenge that passed. Only
+	// "HTTP-BROKERED-DNS-01" today; kept as a field so a future challenge does not
+	// change the wire shape.
+	Challenge string `json:"challenge"`
 	// ExpiresIn is how many seconds from now the forge keeps the submitted
 	// challenge value before it expires (not the DNS TTL of the TXT record).
 	ExpiresIn int `json:"expiresIn"`
 }
 
+// v2Body is the /v2 registration request body: the DNS-01 challenge value and
+// the http(s) origins where the node serves its ownership proof.
+type v2Body struct {
+	Value   string   `json:"value"`
+	Origins []string `json:"origins"`
+}
+
 // decodeV2Body parses the registration body, rejecting unknown fields and any
 // trailing data.
-func decodeV2Body(body []byte) (*requestBody, error) {
-	tb := &requestBody{}
+func decodeV2Body(body []byte) (*v2Body, error) {
+	tb := &v2Body{}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(tb); err != nil {

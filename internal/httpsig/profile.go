@@ -27,7 +27,7 @@ const (
 	// unpadded base64url in the nonce parameter.
 	MinNonceBytes = 16
 
-	// OwnershipTag domain-separates the http-ownership proof signature from a
+	// OwnershipTag domain-separates the ownership proof signature from a
 	// registration request signature.
 	OwnershipTag = "autotls-ownership"
 	// OwnershipProofLifetime bounds how long a proof stays valid after signing.
@@ -39,7 +39,7 @@ const (
 var RegistrationComponents = []string{"@method", "@authority", "@path", "content-type", "content-digest"}
 
 // OwnershipComponents is the fixed set of covered components for the
-// http-ownership proof response signature. content-digest binds the response
+// ownership proof response signature. content-digest binds the response
 // body, which carries the canonical scheme://host:port the proof is for.
 var OwnershipComponents = []string{"@status", "content-digest"}
 

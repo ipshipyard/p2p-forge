@@ -126,7 +126,7 @@ signatures 2.4 to 4.6 KB; SLH-DSA signatures reach 8 to 50 KB; Ed25519 is 32 and
 them the same way it hashes an RSA key (see Identifiers above), but they do
 travel in the `did:key`, and the `Signature` header grows with the signature.
 Check the header-size limits of any fronting proxy or CDN, and the proof-fetch
-header cap on the `http-ownership` path. ML-DSA is workable; SLH-DSA is likely
+header cap on the `HTTP-BROKERED-DNS-01` path. ML-DSA is workable; SLH-DSA is likely
 too large to carry in a header for now.
 
 ## Guidance
@@ -144,6 +144,6 @@ too large to carry in a header for now.
 - Migration is additive: a new type is opt-in, the `did:key` self-describes it,
   and Ed25519 stays the default while existing clients keep working through a
   dual-stack transition.
-- The `http-ownership` proof needs no per-type work: it reuses the same key and
+- The ownership proof needs no per-type work: it reuses the same key and
   the same signature machinery, so any key type accepted for requests works for
   the proof automatically.
