@@ -194,73 +194,59 @@ addresses most likely to verify.
 
 ### http-ownership (no libp2p)
 
-The node MUST serve, at the key-scoped path below, a compact EdDSA JWT
-([RFC 7519](https://www.rfc-editor.org/rfc/rfc7519)) proving its key controls the
-origin:
+The node serves an ownership proof at the key-scoped path below. The forge
+fetches it with a `POST` and the node answers with an RFC 9421-signed response,
+reusing the same signature scheme as the registration request. `POST` (not
+`GET`) keeps the response uncacheable, so every check gets a fresh signature.
 
 ```
-GET http(s)://<host>[:<port>]/.well-known/autotls/<did:key>
+POST http(s)://<host>[:<port>]/.well-known/autotls/<did:key>
 ```
 
 The `autotls` well-known path suffix may be registered in the IANA registry
 ([RFC 8615](https://www.rfc-editor.org/rfc/rfc8615)) in the future, if this
 API sees enough adoption.
 
-The response body is the JWT (`Content-Type: application/jwt`), signed with the
-node's Ed25519 key. The node signs it once and reuses it until close to expiry,
-so it is cacheable and can be signed offline. The JWT header MUST carry
-`alg: EdDSA` and `typ: autotls-ownership+jwt` (explicit typing per
-[RFC 8725](https://www.rfc-editor.org/rfc/rfc8725), so no other JWT signed by
-the same key can pass as an ownership proof). The payload carries these claims:
+The node MUST answer `200`, with the origin it controls as the response body,
+and sign the response with its Ed25519 key. The signature MUST cover exactly:
 
-| Claim | Meaning |
-| --- | --- |
-| `origin` | The canonical `scheme://host:port` the key controls (below). |
-| `iat` | Issued-at, unix seconds. |
-| `exp` | Expiry, unix seconds. `exp - iat` MUST NOT exceed 14 days, with no extra allowance. |
+```
+("@status" "content-digest")
+```
 
-The `origin` string is `scheme://host:port` built as follows:
+with signature parameters `created`, `expires` (`expires - created` bounds the
+proof lifetime), `keyid` (the node's `did:key`), and `tag` set to
+`autotls-ownership`. As on the request, `Content-Digest` (RFC 9530) over the
+body is covered by the signature, so signing the response signs the origin too.
 
-1. `scheme` is lowercase, `http` or `https` only.
-2. There is no userinfo, path, query, or fragment; a lone trailing `/` in the
-   source URL is dropped.
-3. `host` is lowercase. An IP-literal host is in its canonical textual form
-   ([RFC 5952](https://www.rfc-editor.org/rfc/rfc5952) for IPv6), an
-   IPv4-mapped IPv6 literal collapses to its IPv4 form, an IPv6 literal stays
-   bracketed, and a zoned IPv6 literal (`fe80::1%eth0`) is rejected.
-4. `port` is always explicit: `443` fills in for `https` and `80` for `http`
-   when the URL has none.
+The body is the origin
+([RFC 6454](https://www.rfc-editor.org/rfc/rfc6454) section 6.2): a
+`scheme://host` string (`http` or `https`, lowercase host), with the port only
+when it is not the scheme default (`443` for `https`, `80` for `http`), and no
+userinfo, path, query, or fragment. For example `https://GW.Example` is
+`https://gw.example`, `https://gw.example:8443` keeps its port, and an IPv6
+literal is bracketed (`https://[2001:db8::1]`).
 
-For example `https://GW.Example` becomes `https://gw.example:443`, and
-`http://[::ffff:1.2.3.4]` becomes `http://1.2.3.4:80`. This differs from the
-serialization browsers use for the `Origin` header
-([RFC 6454](https://www.rfc-editor.org/rfc/rfc6454) section 6.2), which omits
-a default port; the always-explicit port keeps the comparison a single string
-equality with no per-scheme table.
+The forge MUST verify the response signature under the registration `keyid`,
+and MUST NOT trust the `keyid` the proof itself carries. It MUST confirm the
+`Content-Digest` matches the body, check that the body equals, as an exact
+string, the origin of the server it connected to (scheme, host, and port are
+all bound, so an `http` proof cannot satisfy an `https` server), and reject a
+proof whose `expires` has passed. Freshness comes from the forge fetching the
+proof live over `POST`, so a stale proof at a dead node does not verify.
 
-The forge MUST verify the JWT under the registration `keyid`, and MUST NOT trust
-the key or `kid` the token itself carries. It MUST check that the `origin` claim
-equals, as an exact string, the origin it connected to (scheme, host, and port
-are all bound, so an `http` proof cannot satisfy an `https` address), and MUST
-reject an expired token. The verifier allows 5 minutes of clock skew on `iat`
-and `exp`, and a signer MAY backdate `iat` to tolerate a slow verifier clock;
-the 14-day cap on `exp - iat` still applies as written. Freshness comes from
-the forge fetching the proof live, so a stale proof at a dead node does not
-verify.
-
-What this proves: the key holder controls what is served at that origin right
-now. It does not prove the node is dialable over libp2p (a CDN can serve the
-static file while the node is down). For proven dialability, use a libp2p
-address.
+What this proves: the key holder controls what is served at that server right
+now. It does not prove the node is dialable over libp2p. For proven
+dialability, use `/v1`.
 
 Notes for operators of the endpoint:
 
-- The proof is offline-signable. The identity key does not have to be online in
-  the HTTP tier. A static file server or a CDN can serve the token.
+- The proof is signed live per request, so the identity key is used in the HTTP
+  tier. This library ships a ready handler (see the client docs) that produces
+  the signed response.
 - The endpoint may answer on any port, so a node behind NAT can serve the
   proof on a port forwarded via UPnP or router config. The public IP is what
-  is being proven and denylisted; the port does not matter, and the
-  libp2p-dialback mode accepts arbitrary ports too.
+  is being proven and denylisted; the port does not matter.
 - The forge MUST pin each connection to a vetted resolved public IP of the
   endpoint (it MAY try one address per family when the host resolves to both),
   MUST refuse a non-public target, and MUST NOT follow redirects. It does not

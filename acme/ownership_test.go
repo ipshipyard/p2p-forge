@@ -25,15 +25,25 @@ func ed25519Pub(t *testing.T, priv crypto.PrivKey) ed25519.PublicKey {
 	return ed25519.PublicKey(raw)
 }
 
+// signingKey wraps a libp2p Ed25519 key as the libp2p-free client.SigningKey.
+func signingKey(t *testing.T, priv crypto.PrivKey) client.SigningKey {
+	t.Helper()
+	raw, err := priv.Raw()
+	require.NoError(t, err)
+	sk, err := client.NewEd25519SigningKey(ed25519.PrivateKey(raw))
+	require.NoError(t, err)
+	return sk
+}
+
 // newProofServer starts a loopback HTTP server that serves priv's ownership
-// proof for its own origin, and returns the server plus the signer's did:key.
+// proof for its own server, and returns the server plus the signer's did:key.
 func newProofServer(t *testing.T, priv crypto.PrivKey) (*httptest.Server, string) {
 	t.Helper()
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	handler, err := client.OwnershipProofHandler(priv, srv.URL)
+	handler, err := client.OwnershipProofHandler(signingKey(t, priv), srv.URL)
 	require.NoError(t, err)
 	mux.Handle("/", handler)
 
@@ -85,7 +95,7 @@ func TestHTTPOwnershipSelfSignedTLS(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewTLSServer(mux)
 	t.Cleanup(srv.Close)
-	handler, err := client.OwnershipProofHandler(priv, srv.URL)
+	handler, err := client.OwnershipProofHandler(signingKey(t, priv), srv.URL)
 	require.NoError(t, err)
 	mux.Handle("/", handler)
 	did, err := httpsig.EncodeDIDKey(priv.GetPublic())
@@ -114,39 +124,39 @@ func TestV2HTTPOwnershipEndToEnd(t *testing.T) {
 	require.Equal(t, "http-ownership", resp.Verification)
 }
 
-func TestCanonicalOriginServer(t *testing.T) {
-	// A path or userinfo in the address is rejected, so the signed origin
-	// cannot be widened.
+func TestCanonicalOrigin(t *testing.T) {
+	// A path or userinfo in the address is rejected, so the signed server
+	// string cannot be widened.
 	for _, bad := range []string{
 		"https://gw.example/some/path",
 		"https://user@gw.example",
 		"ftp://gw.example",
 		"https://gw.example?x=1",
-		"https://[fe80::1%25eth0]", // zoned IPv6: host-local, never verifiable
 	} {
 		_, err := client.CanonicalOrigin(bad)
 		require.Error(t, err, bad)
 	}
-	o, err := client.CanonicalOrigin("https://GW.Example")
-	require.NoError(t, err)
-	require.Equal(t, "https://gw.example:443", o.Origin)
 
-	// IPv6 literals stay bracketed in the origin string (so it remains a
-	// valid URL) and IP literals collapse to one canonical textual form.
-	o, err = client.CanonicalOrigin("https://[2001:DB8:0::1]")
-	require.NoError(t, err)
-	require.Equal(t, "https://[2001:db8::1]:443", o.Origin)
-	require.Equal(t, "2001:db8::1", o.Host)
-
-	// An IPv4-mapped IPv6 literal collapses to its IPv4 form.
-	o, err = client.CanonicalOrigin("http://[::ffff:1.2.3.4]")
-	require.NoError(t, err)
-	require.Equal(t, "http://1.2.3.4:80", o.Origin)
+	// RFC 6454 origin: lowercase host, default port omitted, custom port kept.
+	for _, tc := range []struct{ in, want, port string }{
+		{"https://GW.Example", "https://gw.example", "443"},
+		{"https://gw.example:443", "https://gw.example", "443"},
+		{"https://gw.example:8443", "https://gw.example:8443", "8443"},
+		{"http://gw.example", "http://gw.example", "80"},
+		{"http://gw.example:8080", "http://gw.example:8080", "8080"},
+		{"https://[2001:DB8::1]", "https://[2001:db8::1]", "443"},
+		{"https://[2001:db8::1]:8443", "https://[2001:db8::1]:8443", "8443"},
+	} {
+		s, err := client.CanonicalOrigin(tc.in)
+		require.NoError(t, err, tc.in)
+		require.Equal(t, tc.want, s.URL, tc.in)
+		require.Equal(t, tc.port, s.Port, tc.in)
+	}
 }
 
 func TestHTTPOwnershipIPv6Literal(t *testing.T) {
 	// An IPv6-literal endpoint must produce a fetchable proof URL and a
-	// matching origin claim on both sides.
+	// matching server claim on both sides.
 	ln, err := net.Listen("tcp", "[::1]:0")
 	require.NoError(t, err)
 	mux := http.NewServeMux()
@@ -158,20 +168,20 @@ func TestHTTPOwnershipIPv6Literal(t *testing.T) {
 
 	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
 	require.NoError(t, err)
-	handler, err := client.OwnershipProofHandler(priv, srv.URL)
+	handler, err := client.OwnershipProofHandler(signingKey(t, priv), srv.URL)
 	require.NoError(t, err)
 	mux.Handle("/", handler)
 	did, err := httpsig.EncodeDIDKey(priv.GetPublic())
 	require.NoError(t, err)
 
 	// Pin the bracketed form itself: without this, both sides would agree on
-	// even a malformed origin string (they derive it through the same call)
+	// even a malformed server string (they derive it through the same call)
 	// and the fetch, which dials the pinned IP rather than the URL host,
 	// would pass regardless.
-	o, err := client.CanonicalOrigin(srv.URL)
+	s, err := client.CanonicalOrigin(srv.URL)
 	require.NoError(t, err)
-	require.Equal(t, "http://"+srv.Listener.Addr().String(), o.Origin)
-	require.Contains(t, o.Origin, "[::1]")
+	require.Equal(t, "http://"+srv.Listener.Addr().String(), s.URL)
+	require.Contains(t, s.URL, "[::1]")
 
 	c := newTestWriter()
 	require.NoError(t, c.verifyHTTPOwnership(t.Context(), ed25519Pub(t, priv), did, []string{srv.URL}))

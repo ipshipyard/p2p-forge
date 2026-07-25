@@ -26,11 +26,22 @@ const (
 	// MinNonceBytes is the minimum nonce entropy: 128 bits, carried as
 	// unpadded base64url in the nonce parameter.
 	MinNonceBytes = 16
+
+	// OwnershipTag domain-separates the http-ownership proof signature from a
+	// registration request signature.
+	OwnershipTag = "autotls-ownership"
+	// OwnershipProofLifetime bounds how long a proof stays valid after signing.
+	OwnershipProofLifetime = 5 * time.Minute
 )
 
 // RegistrationComponents is the fixed, ordered set of covered components for a
 // /v2 registration request.
 var RegistrationComponents = []string{"@method", "@authority", "@path", "content-type", "content-digest"}
+
+// OwnershipComponents is the fixed set of covered components for the
+// http-ownership proof response signature. content-digest binds the response
+// body, which carries the canonical scheme://host:port the proof is for.
+var OwnershipComponents = []string{"@status", "content-digest"}
 
 // CanonicalAuthority lowercases an authority and strips a default http/https
 // port, so the server can compare @authority against its configured domain.

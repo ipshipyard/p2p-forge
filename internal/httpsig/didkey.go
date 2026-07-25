@@ -11,6 +11,7 @@ package httpsig
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/binary"
 	"fmt"
 	"strings"
@@ -27,8 +28,22 @@ const didKeyPrefix = "did:key:"
 // varint, the byte prefix a did:key places before the raw public key.
 var ed25519PubMulticodec = binary.AppendUvarint(nil, uint64(multicodec.Ed25519Pub))
 
-// EncodeDIDKey returns the did:key form of an Ed25519 public key, e.g.
-// "did:key:z6Mk...". Only Ed25519 is supported; /v2 is Ed25519-first and other
+// EncodeDIDKeyEd25519 returns the did:key form of an Ed25519 public key, e.g.
+// "did:key:z6Mk...". It takes a stdlib key so the v2 client stays libp2p-free.
+func EncodeDIDKeyEd25519(pub ed25519.PublicKey) (string, error) {
+	if len(pub) != ed25519.PublicKeySize {
+		return "", fmt.Errorf("did:key: invalid Ed25519 public key length %d", len(pub))
+	}
+	prefixed := append(append([]byte{}, ed25519PubMulticodec...), pub...)
+	mb, err := multibase.Encode(multibase.Base58BTC, prefixed)
+	if err != nil {
+		return "", fmt.Errorf("did:key: multibase encode: %w", err)
+	}
+	return didKeyPrefix + mb, nil
+}
+
+// EncodeDIDKey is the libp2p wrapper of EncodeDIDKeyEd25519, used server-side
+// where keys arrive as libp2p crypto.PubKey. Only Ed25519 is supported; other
 // libp2p key types continue to use /v1.
 func EncodeDIDKey(pub crypto.PubKey) (string, error) {
 	if _, ok := pub.(*crypto.Ed25519PublicKey); !ok {
@@ -38,12 +53,7 @@ func EncodeDIDKey(pub crypto.PubKey) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("did:key: reading raw public key: %w", err)
 	}
-	prefixed := append(append([]byte{}, ed25519PubMulticodec...), raw...)
-	mb, err := multibase.Encode(multibase.Base58BTC, prefixed)
-	if err != nil {
-		return "", fmt.Errorf("did:key: multibase encode: %w", err)
-	}
-	return didKeyPrefix + mb, nil
+	return EncodeDIDKeyEd25519(ed25519.PublicKey(raw))
 }
 
 // DecodeDIDKey parses a did:key into an Ed25519 public key. It rejects any

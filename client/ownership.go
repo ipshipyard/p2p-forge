@@ -1,20 +1,11 @@
 package client
 
 import (
-	"crypto/ed25519"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
-	"sync"
-	"time"
-
-	"github.com/ipshipyard/p2p-forge/internal/httpsig"
-	"github.com/ipshipyard/p2p-forge/internal/ownership"
-	"github.com/libp2p/go-libp2p/core/crypto"
 )
 
 // WellKnownProofPath is the path prefix where a node serves its ownership
@@ -22,21 +13,24 @@ import (
 // is keyed by did:key (not a peerid) to keep the v2 surface libp2p-agnostic.
 const WellKnownProofPath = "/.well-known/autotls/"
 
-// HTTPOrigin is the canonical form of an http(s) endpoint used by the ownership
-// proof: an origin string the proof binds, plus the pieces needed to connect.
+// HTTPOrigin is the canonical form of an http(s) server the ownership proof is
+// bound to: its origin string plus the parts needed to connect.
 type HTTPOrigin struct {
-	Origin string // scheme://host:port, lowercase host, explicit port
+	// URL is the server's origin serialized per RFC 6454 section 6.2:
+	// scheme://host, with the port only when it is not the scheme default.
+	URL string
+	// Scheme, Host, and Port are the connection parameters. Port is always
+	// concrete (the scheme default when the URL omits it).
 	Scheme string
 	Host   string
 	Port   string
 }
 
-// CanonicalOrigin parses an origin-only http(s) URL into its canonical form.
-// It rejects userinfo, a path, query, or fragment so the signed origin is
-// unambiguous and cannot be widened by trailing URL components. An IP-literal
-// host is normalized to its canonical textual form, and an IPv6 literal is
-// bracketed in Origin ("https://[2001:db8::1]:443"), so both sides of the
-// proof derive the same origin string and the string stays valid in a URL.
+// CanonicalOrigin parses a scheme://host[:port] URL into its origin form.
+// It rejects userinfo, a path, query, or fragment so the signed server string
+// is unambiguous and cannot be widened by trailing URL components. The origin
+// follows RFC 6454 section 6.2: lowercase host, and the port omitted when it is
+// the scheme default (443 for https, 80 for http).
 func CanonicalOrigin(rawURL string) (HTTPOrigin, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -58,55 +52,51 @@ func CanonicalOrigin(rawURL string) (HTTPOrigin, error) {
 	if host == "" {
 		return HTTPOrigin{}, fmt.Errorf("origin must contain a host")
 	}
-	if ip, err := netip.ParseAddr(host); err == nil {
-		// A zone (fe80::1%eth0) names an interface on one host: it can never
-		// be a publicly verifiable origin, and its "%" is not URL-safe.
-		if ip.Zone() != "" {
-			return HTTPOrigin{}, fmt.Errorf("origin must not contain an IPv6 zone")
-		}
-		host = ip.Unmap().String()
-	}
 	port := u.Port()
 	if port == "" {
-		if u.Scheme == "https" {
-			port = "443"
-		} else {
-			port = "80"
-		}
+		port = defaultPort(u.Scheme)
 	}
-	return HTTPOrigin{
-		Origin: u.Scheme + "://" + net.JoinHostPort(host, port),
-		Scheme: u.Scheme,
-		Host:   host,
-		Port:   port,
-	}, nil
+
+	// RFC 6454 origin: keep the port only when it is not the scheme default.
+	origin := u.Scheme + "://" + bracketHost(host)
+	if port != defaultPort(u.Scheme) {
+		origin = u.Scheme + "://" + net.JoinHostPort(host, port)
+	}
+	return HTTPOrigin{URL: origin, Scheme: u.Scheme, Host: host, Port: port}, nil
 }
 
-// OwnershipProofHandler returns an http.Handler that serves the node's ownership
-// proof (a compact EdDSA JWT) at WellKnownProofPath+<did:key> for the given
-// origin. Mount it on the node's existing HTTP server. The proof is cached and
-// refreshed before it expires, so it stays cacheable and the key is used rarely.
+func defaultPort(scheme string) string {
+	if scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
+// bracketHost wraps an IPv6 literal in brackets so the origin stays a valid URL.
+func bracketHost(host string) string {
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
+}
+
+// OwnershipProofHandler returns an http.Handler that answers
+// POST /.well-known/autotls/<did:key> with an RFC 9421-signed response proving
+// key controls origin. Mount it on the node's public HTTP server. POST
+// (not GET) keeps the proof uncacheable, so every check gets a fresh signature.
 //
-// rawURL is the public origin the node is registering (e.g. https://gw.example).
-func OwnershipProofHandler(privKey crypto.PrivKey, rawURL string) (http.Handler, error) {
-	o, err := CanonicalOrigin(rawURL)
+// origin is the public origin the node is registering (e.g.
+// https://gw.example).
+func OwnershipProofHandler(key SigningKey, origin string) (http.Handler, error) {
+	o, err := CanonicalOrigin(origin)
 	if err != nil {
 		return nil, err
 	}
-	did, err := httpsig.EncodeDIDKey(privKey.GetPublic()) // also rejects non-Ed25519 keys
-	if err != nil {
-		return nil, err
-	}
-	raw, err := privKey.Raw()
-	if err != nil {
-		return nil, fmt.Errorf("reading private key: %w", err)
-	}
-	signer := &ownershipSigner{priv: ed25519.PrivateKey(raw), origin: o.Origin}
-	wantPath := WellKnownProofPath + did
+	wantPath := WellKnownProofPath + key.DIDKey()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			w.Header().Set("Allow", "GET, HEAD")
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -114,41 +104,9 @@ func OwnershipProofHandler(privKey crypto.PrivKey, rawURL string) (http.Handler,
 			http.NotFound(w, r)
 			return
 		}
-		proof, err := signer.token(time.Now())
-		if err != nil {
-			http.Error(w, "could not produce ownership proof", http.StatusInternalServerError)
+		if err := key.signOwnershipResponse(w, r, o.URL); err != nil {
+			http.Error(w, "could not sign ownership proof", http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/jwt")
-		if r.Method == http.MethodHead {
-			return
-		}
-		_, _ = io.WriteString(w, proof)
 	}), nil
-}
-
-// ownershipSigner caches a signed proof JWT and re-signs it before expiry.
-type ownershipSigner struct {
-	priv   ed25519.PrivateKey
-	origin string
-
-	mu      sync.Mutex
-	cached  string
-	expires time.Time
-}
-
-func (s *ownershipSigner) token(now time.Time) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Refresh once we are into the last quarter of the window.
-	if s.cached == "" || now.After(s.expires.Add(-ownership.DefaultWindow/4)) {
-		tok, err := ownership.Sign(s.priv, s.origin, now, ownership.DefaultWindow)
-		if err != nil {
-			return "", err
-		}
-		s.cached = tok
-		s.expires = now.Add(ownership.DefaultWindow)
-	}
-	return s.cached, nil
 }
