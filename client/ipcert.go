@@ -476,6 +476,26 @@ func (m *ipCertMgr) hasCertFor(ip string) bool {
 	return false
 }
 
+// certExpired reports whether every certificate cached for ip has run out,
+// which is where a node that was offline past renewal ends up.
+//
+// Holding nothing is deliberately not the same answer. A certificate handed to
+// certmagic takes a moment to land in the cache, and reading that gap as
+// expiry would send a node to the broker in the seconds after it successfully
+// certified its own address.
+func (m *ipCertMgr) certExpired(ip string) bool {
+	certs := m.cache.AllMatchingCertificates(ip)
+	if len(certs) == 0 {
+		return false
+	}
+	for _, cert := range certs {
+		if !cert.Expired() {
+			return false
+		}
+	}
+	return true
+}
+
 // SelectCertificate implements certmagic.CertSelection.
 //
 // certmagic reaches this only when its own lookup came up empty. The case that
@@ -603,7 +623,7 @@ func (m *ipCertMgr) checkFallback() {
 	m.mu.Lock()
 	needed := m.evaluated
 	for ip, st := range m.addrs {
-		covered := st.managed && m.hasCertFor(ip)
+		covered := st.managed && !m.certExpired(ip)
 		onTheWay := st.obtaining || (!st.managed && st.backoff.Failures == 0)
 		if covered || onTheWay {
 			needed = false
