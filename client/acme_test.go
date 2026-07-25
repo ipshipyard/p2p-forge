@@ -228,6 +228,7 @@ func TestAddrFactoryFnSkipsUnreachableAddrs(t *testing.T) {
 			produceShortAddrs, // produceShortAddrs
 			wssComponent,      // p2pForgeWssComponent
 			multiaddrs,
+			nil, // ipCerts
 			logger,
 		)
 

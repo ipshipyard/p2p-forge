@@ -39,6 +39,8 @@ type P2PForgeCertMgr struct {
 	hostFn                     func() host.Host
 	hasHost                    func() bool
 	certmagic                  *certmagic.Config
+	cache                      *certmagic.Cache
+	ipCerts                    *ipCertMgr // nil unless WithIPCerts was used
 	log                        *zap.SugaredLogger
 	allowPrivateForgeAddresses bool
 	produceShortAddrs          bool
@@ -109,6 +111,9 @@ type P2PForgeCertMgrConfig struct {
 	produceShortAddrs          bool
 	renewCheckInterval         time.Duration
 	registrationDelay          time.Duration
+	ipCerts                    bool
+	ipCertPort                 int
+	ipCertProfile              string
 }
 
 type P2PForgeCertMgrOptions func(*P2PForgeCertMgrConfig) error
@@ -263,6 +268,66 @@ func WithShortForgeAddrs(produceShortAddrs bool) P2PForgeCertMgrOptions {
 	}
 }
 
+// WithIPCerts makes the node ask the CA for a certificate covering its own
+// public IP addresses (RFC 8738) instead of registering with the forge broker.
+// No broker, no DNS name, and no third party are involved: the CA proves the
+// node holds the address by connecting to that address and running the ACME
+// TLS-ALPN-01 challenge, which the node answers on the TCP port it already
+// listens on.
+//
+// This works only for a libp2p host that listens on TCP port 443, and only if
+// that port is dialable from the internet. The TLS-ALPN-01 challenge is
+// defined on port 443 and nowhere else (RFC 8737, section 3), and DNS-01, the
+// challenge the broker exists to answer, cannot be used for an address that
+// has no name (RFC 8738, section 4). So there is no way to certify an address
+// on any other port. Behind a router, forward external port 443 to port 443 on
+// this node.
+//
+// A node that cannot bind port 443, or whose port 443 the internet cannot
+// reach, should stay with the broker and its name-based certificate, which has
+// no such requirement. Enabling this option on such a node is not harmful: the
+// broker is used as before, either because no address of ours is reachable on
+// the port or because validation failed. It does mean a wasted validation
+// attempt and a delay before the broker takes over, so on a node known not to
+// qualify, leave it off.
+//
+// A certificate covers an address rather than a port, so once one exists every
+// TLS listener on that address is announced with it.
+func WithIPCerts() P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.ipCerts = true
+		return nil
+	}
+}
+
+// WithIPCertPort overrides the TCP port the CA is expected to connect to when
+// validating an IP address. Meant for testing against a local ACME server.
+//
+// It does not make a node on some other port certifiable: a public CA always
+// connects to DefaultIPCertPort and ignores anything set here, so pointing
+// this at another port in production only stops certificates from being
+// issued.
+func WithIPCertPort(port int) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("WithIPCertPort: %d is not a TCP port", port)
+		}
+		config.ipCertPort = port
+		return nil
+	}
+}
+
+// WithIPCertProfile overrides the ACME profile requested for IP certificates.
+// Meant for testing: Let's Encrypt only issues them under
+// DefaultIPCertProfile, and a profile the CA does not advertise fails before
+// any order is placed.
+func WithIPCertProfile(profile string) P2PForgeCertMgrOptions {
+	return func(config *P2PForgeCertMgrConfig) error {
+		config.ipCertProfile = profile
+		return nil
+	}
+}
+
 func WithLogger(log *zap.SugaredLogger) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
 		config.log = log
@@ -314,6 +379,12 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	if mgrCfg.storage == nil {
 		mgrCfg.storage = &certmagic.FileStorage{Path: DefaultStorageLocation}
 	}
+	if mgrCfg.ipCertPort == 0 {
+		mgrCfg.ipCertPort = DefaultIPCertPort
+	}
+	if mgrCfg.ipCertProfile == "" {
+		mgrCfg.ipCertProfile = DefaultIPCertProfile
+	}
 
 	// Wire up resolver for verifying DNS-01 TXT record got published correctly
 	if mgrCfg.resolver == nil {
@@ -352,12 +423,7 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 
 	// NOTE: callback getter is necessary to avoid circular dependency
 	// but also structure code to avoid issues like https://github.com/ipshipyard/p2p-forge/issues/28
-	configGetter := func(cert certmagic.Certificate) (*certmagic.Config, error) {
-		if mgr.certmagic == nil {
-			return nil, errors.New("P2PForgeCertmgr.certmagic is not set")
-		}
-		return mgr.certmagic, nil
-	}
+	configGetter := mgr.configForCert
 
 	magicCache := certmagic.NewCache(certmagic.CacheOptions{
 		GetConfigForCert:   configGetter,
@@ -366,10 +432,20 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	})
 
 	// Wire up final certmagic config by calling upstream New with sanity checks
+	mgr.cache = magicCache
 	mgr.certmagic = certmagic.New(magicCache, certmagic.Config{
 		Storage: mgrCfg.storage,
 		Logger:  mgrCfg.log.Desugar(),
 	})
+
+	// Certificates for our own IP addresses come from a second config over the
+	// same cache: they need a different issuer (no broker, a different ACME
+	// challenge, and the CA's short-lived profile), while a single tls.Config
+	// still has to serve both kinds of certificate.
+	if mgrCfg.ipCerts {
+		mgr.ipCerts = newIPCertMgr(magicCache, mgrCfg, mgrCfg.log.Named("ipcerts"))
+		mgr.certmagic.CertSelection = mgr.ipCerts
+	}
 
 	// Wire up Issuer that does brokered DNS-01 ACME challenge
 	acmeLog := mgrCfg.log.Named("acme-broker")
@@ -451,8 +527,38 @@ func (m *P2PForgeCertMgr) Start() error {
 		start := time.Now()
 		log := m.log.Named("start")
 		h := m.hostFn()
+
 		name := certName(h.ID(), m.forgeDomain)
 		certExists := localCertExists(m.ctx, m.certmagic, name)
+
+		// With IP certificates enabled the broker is a fallback, not the
+		// first choice: a node the CA can reach certifies its own address and
+		// never registers with anyone. waitForFallback returns once that is
+		// known not to work, either because no address of ours can be
+		// validated or because every one of them failed.
+		//
+		// A certificate already in storage is loaded first either way. Serving
+		// one we hold costs the broker nothing, and withholding it would leave
+		// an upgrading node with no address to announce until the first IP
+		// certificate arrives.
+		if m.ipCerts != nil {
+			go m.ipCerts.start(m.ctx, h)
+			if certExists {
+				log.Infof("found preexisting cert for %q in local storage, serving it while we try to certify our own address", name)
+				if err := m.certmagic.ManageAsync(m.ctx, []string{name}); err != nil {
+					log.Error(err)
+				}
+			}
+			if !m.ipCerts.waitForFallback(m.ctx) {
+				return
+			}
+			if certExists {
+				// Already managed above; renewals go through the broker from
+				// here, as they did before.
+				return
+			}
+			log.Infof("no address of ours can be certified directly, falling back to the broker at %s", m.forgeRegistrationEndpoint)
+		}
 		startCertManagement := func() {
 			if !certExists {
 				// respect WithRegistrationDelay
@@ -583,8 +689,44 @@ func (m *P2PForgeCertMgr) Stop() {
 func (m *P2PForgeCertMgr) TLSConfig() *tls.Config {
 	tlsCfg := m.certmagic.TLSConfig()
 	tlsCfg.NextProtos = nil // remove the ACME ALPN
+	if m.ipCerts != nil {
+		// Keep the ACME ALPN. It is how the CA proves we control the address
+		// we asked it to certify, and this listener owns the port the CA
+		// connects to, so nothing else can answer. Go's HTTP server appends h2
+		// and http/1.1 to this list, and a client negotiates acme-tls/1 only
+		// when it offers nothing else, which is only ever an ACME validator.
+		tlsCfg.NextProtos = []string{acmez.ACMETLS1Protocol}
+	}
 	tlsCfg.GetCertificate = m.certmagic.GetCertificate
 	return tlsCfg
+}
+
+// configForCert tells certmagic which config maintains a given certificate,
+// which is what decides how it gets renewed.
+//
+// A certificate for one of our own IP addresses renews through its own issuer:
+// the broker cannot answer a DNS-01 challenge for an address that has no name,
+// so sending it there would fail quietly every few days until the certificate
+// expired.
+func (m *P2PForgeCertMgr) configForCert(cert certmagic.Certificate) (*certmagic.Config, error) {
+	if m.certmagic == nil {
+		return nil, errors.New("P2PForgeCertmgr.certmagic is not set")
+	}
+	if m.ipCerts != nil && certIsForIP(cert) {
+		return m.ipCerts.cfg, nil
+	}
+	return m.certmagic, nil
+}
+
+// certIsForIP reports whether cert was issued for IP addresses rather than DNS
+// names.
+func certIsForIP(cert certmagic.Certificate) bool {
+	for _, name := range cert.Names {
+		if certmagic.SubjectIsIP(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *P2PForgeCertMgr) AddrStrings() []string {
@@ -642,6 +784,7 @@ func (m *P2PForgeCertMgr) createAddrsFactory(allowPrivateForgeAddrs bool, produc
 			produceShortAddrs,
 			p2pForgeWssComponent,
 			multiaddrs,
+			m.ipCerts,
 			m.log,
 		)
 	}
@@ -762,7 +905,7 @@ var (
 	_ acmez.Waiter = (*dns01P2PForgeSolver)(nil)
 )
 
-func addrFactoryFn(skipForgeAddrs bool, hostFn func() host.Host, forgeDomain string, allowPrivateForgeAddrs bool, produceShortAddrs bool, p2pForgeWssComponent ma.Multiaddr, multiaddrs []ma.Multiaddr, log *zap.SugaredLogger) []ma.Multiaddr {
+func addrFactoryFn(skipForgeAddrs bool, hostFn func() host.Host, forgeDomain string, allowPrivateForgeAddrs bool, produceShortAddrs bool, p2pForgeWssComponent ma.Multiaddr, multiaddrs []ma.Multiaddr, ipCerts *ipCertMgr, log *zap.SugaredLogger) []ma.Multiaddr {
 	retAddrs := make([]ma.Multiaddr, 0, len(multiaddrs))
 	var unreachableAddrs []ma.Multiaddr
 	var peerID peer.ID
@@ -788,7 +931,26 @@ OUTER:
 		// We expect the address to be of the form: /ipX/<IP address>/tcp/<Port>/tls/sni/*.<forge-domain>/ws
 		// We'll then replace the * with the IP address
 		withoutForgeWSS := a.Decapsulate(p2pForgeWssComponent)
-		if withoutForgeWSS.Equal(a) {
+		isForgeAddr := !withoutForgeWSS.Equal(a)
+
+		// An address we hold our own certificate for needs no broker and no
+		// DNS name: announce the IP itself. This runs before the forge rewrite
+		// so a node that certified its own address never advertises a brokered
+		// one for the same listener.
+		if ipCerts != nil {
+			if rewritten, ok := ipCerts.rewriteAddr(a); ok {
+				retAddrs = append(retAddrs, rewritten)
+				continue
+			}
+			if !isForgeAddr && ipCerts.covers(a) {
+				// Ours to certify, but the certificate is not there yet.
+				// Announcing a TLS endpoint that cannot complete a handshake
+				// only earns failed dials.
+				continue
+			}
+		}
+
+		if !isForgeAddr {
 			retAddrs = append(retAddrs, a)
 			continue
 		}
