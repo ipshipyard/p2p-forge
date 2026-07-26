@@ -241,37 +241,59 @@ func (m *ipCertMgr) setReachable(addrs []ma.Multiaddr) {
 	m.mu.Unlock()
 }
 
-// candidateAddrs returns the addresses to consider for certification.
+// candidateAddrs returns the addresses to consider for certification: the ones
+// the host found for itself, and the ones its operator told it to announce.
 //
-// It reads the host's own view of its addresses rather than the announced set,
-// which is the output of the very address factory this manager feeds: a
-// listener whose only announced form is a TLS WebSocket address is withheld
-// until a certificate exists, so taking the announced set would hide exactly
-// the address that qualifies the node.
+// The two sources answer different questions and both are needed. What the
+// host found includes addresses learned from other peers, which is the only
+// place a node behind a port mapping sees its public address, and it is taken
+// before the address factory runs: a listener whose only announced form is a
+// TLS WebSocket address is withheld until a certificate exists, so reading the
+// announced set alone would hide the very address that qualifies the node.
+// What the operator announced covers the other direction, a node that has been
+// told its public address because nothing on the box can discover it.
+//
+// An address the host discovered is dropped once libp2p reports it as not
+// reachable from outside, since asking a CA to validate it would only spend
+// the failure budget. An address the operator put in the config is left alone:
+// that is a deliberate statement about reachability, and getting it wrong
+// costs a backed-off retry rather than anything worse.
 func (m *ipCertMgr) candidateAddrs(h host.Host) []ma.Multiaddr {
-	all := h.Addrs()
+	announced := h.Addrs()
+	discovered := announced
 	if allAddrs, ok := h.(interface{ AllAddrs() []ma.Multiaddr }); ok {
-		// Includes addresses learned from other peers, which is where a
-		// node behind a port mapping finds its public address.
-		all = allAddrs.AllAddrs()
+		discovered = allAddrs.AllAddrs()
 	}
 
 	m.mu.Lock()
 	haveEvent, reachable := m.haveEvent, m.reachable
 	m.mu.Unlock()
 
-	// allowPrivate is the same escape hatch as WithAllowPrivateForgeAddrs:
-	// it skips the connectivity checks entirely, which is what a test on
-	// loopback needs. An empty reachable set is also not something to act on,
-	// since it is what a node reports before autonat has any answer.
-	if !haveEvent || m.allowPrivate || len(reachable) == 0 {
-		return all
-	}
-	out := make([]ma.Multiaddr, 0, len(reachable))
-	for _, a := range all {
-		if _, ok := reachable[string(a.Bytes())]; ok {
-			out = append(out, a)
+	// allowPrivate is the same escape hatch as WithAllowPrivateForgeAddrs: it
+	// skips the connectivity checks entirely, which is what a test on loopback
+	// needs. An empty reachable set is also not something to act on, since it
+	// is what a node reports before autonat has an opinion.
+	filter := haveEvent && !m.allowPrivate && len(reachable) > 0
+
+	out := make([]ma.Multiaddr, 0, len(discovered)+len(announced))
+	seen := make(map[string]struct{}, len(discovered)+len(announced))
+	for _, a := range discovered {
+		key := string(a.Bytes())
+		if filter {
+			if _, ok := reachable[key]; !ok {
+				continue
+			}
 		}
+		seen[key] = struct{}{}
+		out = append(out, a)
+	}
+	for _, a := range announced {
+		key := string(a.Bytes())
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, a)
 	}
 	return out
 }

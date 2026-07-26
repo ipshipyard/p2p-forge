@@ -432,15 +432,75 @@ func TestRenewalDispatch(t *testing.T) {
 	}
 }
 
-// addrsHost is a host that knows the addresses it has and the ones it listens
-// on, which is all reconcile asks it for.
+// An operator who puts the node's public address in the config is telling it
+// something it cannot discover on its own, which is the normal setup in a
+// container or on a host whose public address lives on a router. That address
+// has to count.
+func TestCandidateAddrsIncludeAnnouncedOnes(t *testing.T) {
+	log := zaptest.NewLogger(t).Sugar()
+	mgr := newTestIPCertMgr(t, log)
+	mgr.allowPrivate = false
+
+	h := newAddrsHost("/ip4/1.2.3.4/tcp/443")     // Addresses.Announce
+	h.all = addrList("/ip4/192.168.1.10/tcp/443") // everything the host found by itself
+
+	// libp2p has confirmed the address it found, and knows nothing about the
+	// one from the config.
+	mgr.setReachable(addrList("/ip4/192.168.1.10/tcp/443"))
+
+	got := eligibleIPs(mgr.candidateAddrs(h), testIPCertPort, false)
+	if _, ok := got["1.2.3.4"]; !ok {
+		t.Errorf("announced address was dropped, got %v", got)
+	}
+}
+
+// An address the host found for itself and libp2p could not reach is not worth
+// a validation attempt.
+func TestCandidateAddrsDropUnreachableDiscoveredOnes(t *testing.T) {
+	log := zaptest.NewLogger(t).Sugar()
+	mgr := newTestIPCertMgr(t, log)
+	mgr.allowPrivate = false
+
+	h := newAddrsHost()
+	h.all = addrList("/ip4/1.2.3.4/tcp/443", "/ip4/5.6.7.8/tcp/443")
+	mgr.setReachable(addrList("/ip4/1.2.3.4/tcp/443"))
+
+	got := eligibleIPs(mgr.candidateAddrs(h), testIPCertPort, false)
+	if _, ok := got["5.6.7.8"]; ok {
+		t.Errorf("address libp2p reported as unreachable was kept, got %v", got)
+	}
+	if _, ok := got["1.2.3.4"]; !ok {
+		t.Errorf("reachable address was dropped, got %v", got)
+	}
+}
+
+func addrList(addrs ...string) []multiaddr.Multiaddr {
+	out := make([]multiaddr.Multiaddr, 0, len(addrs))
+	for _, a := range addrs {
+		out = append(out, multiaddr.StringCast(a))
+	}
+	return out
+}
+
+// addrsHost is a host that knows the addresses it announces, the ones it found
+// for itself, and the ones it listens on, which is all reconcile asks it for.
 type addrsHost struct {
 	host.Host
 	addrs  []multiaddr.Multiaddr
+	all    []multiaddr.Multiaddr
 	listen []multiaddr.Multiaddr
 }
 
 func (h *addrsHost) Addrs() []multiaddr.Multiaddr { return h.addrs }
+
+// AllAddrs stands in for the method BasicHost exposes: everything the host
+// believes about itself, before the address factory has a say.
+func (h *addrsHost) AllAddrs() []multiaddr.Multiaddr {
+	if h.all == nil {
+		return h.addrs
+	}
+	return h.all
+}
 
 func (h *addrsHost) Network() network.Network { return &listenNetwork{listen: h.listen} }
 
