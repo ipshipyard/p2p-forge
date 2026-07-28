@@ -92,6 +92,7 @@ type ipCertMgr struct {
 	storage      certmagic.Storage
 	issuerKey    string
 	port         int
+	obtainWindow time.Duration // ipCertObtainWindow, shortened by tests
 	allowPrivate bool
 	notBefore    time.Time // no first-time issuance before this, see WithRegistrationDelay
 	log          *zap.SugaredLogger
@@ -140,7 +141,7 @@ func newIPCertMgr(cache *certmagic.Cache, mgrCfg *P2PForgeCertMgrConfig, log *za
 		CA:      mgrCfg.caEndpoint,
 		Email:   mgrCfg.userEmail,
 		Agreed:  true,
-		Profile: mgrCfg.ipCertProfile,
+		Profile: *mgrCfg.ipCertProfile,
 		// The CA always dials the port the challenge is defined on, so
 		// pointing certmagic's own challenge listener at the port we already
 		// listen on makes its bind fail, and certmagic then leaves answering
@@ -158,6 +159,7 @@ func newIPCertMgr(cache *certmagic.Cache, mgrCfg *P2PForgeCertMgrConfig, log *za
 		storage:      mgrCfg.storage,
 		issuerKey:    issuer.IssuerKey(),
 		port:         mgrCfg.ipCertPort,
+		obtainWindow: ipCertObtainWindow,
 		allowPrivate: mgrCfg.allowPrivateForgeAddresses,
 		notBefore:    time.Now().Add(mgrCfg.registrationDelay),
 		decideBy:     time.Now().Add(ipCertFallbackGrace),
@@ -362,43 +364,40 @@ func (m *ipCertMgr) reconcile(ctx context.Context, h host.Host) {
 // obtain runs one issuance attempt for ip and records the outcome. On success
 // the certificate is handed to certmagic, which renews it from then on.
 func (m *ipCertMgr) obtain(ctx context.Context, ip string) {
-	// Record that an attempt is under way before making it. A process killed
-	// mid-attempt leaves this behind, so the next boot waits out the window
-	// instead of starting over: without it a crash loop would spend one ACME
-	// order per restart, which is the failure the backoff exists to prevent.
-	// The real outcome overwrites it below.
 	m.mu.Lock()
-	inFlight := ipCertBackoff{Failures: m.attemptCount(ip), RetryAfter: time.Now().Add(ipCertObtainWindow)}
+	before := m.backoffFor(ip)
 	m.mu.Unlock()
-	m.saveBackoff(ctx, ip, inFlight)
+
+	// Write the failure that this attempt would earn before making it, so a
+	// process killed mid-attempt leaves the wait behind. Without it a node
+	// that keeps dying on boot spends an ACME order every time it comes up,
+	// which is the one thing this backoff exists to prevent. Success and a
+	// clean shutdown both undo it below.
+	failed := nextBackoff(before)
+	m.saveBackoff(ctx, ip, failed)
 
 	err := m.ensureCert(ctx, ip)
 	shuttingDown := ctx.Err() != nil
 
-	backoff := inFlight
-	var wait time.Duration
+	outcome := failed
 	switch {
 	case err == nil:
-		backoff = ipCertBackoff{}
+		outcome = ipCertBackoff{}
 	case shuttingDown:
-		// Not this address's fault. The in-flight record stands and expires
-		// on its own within one window.
-	default:
-		backoff.Failures = inFlight.Failures + 1
-		wait = min(ipCertRetryInterval*time.Duration(1<<min(backoff.Failures-1, 16)), ipCertRetryIntervalMax)
-		backoff.RetryAfter = time.Now().Add(wait)
+		// We are stopping, which says nothing about this address, so put back
+		// the wait it had before. A restart then picks up where it left off
+		// rather than sitting out an hour it did not earn.
+		outcome = before
 	}
 
-	// The status may be gone: the address can leave the eligible set while an
-	// attempt runs. The outcome still has to be recorded, both on disk and,
-	// when the address is still tracked, in memory.
+	// The status may be gone: an address can leave the eligible set while an
+	// attempt runs. The outcome is still recorded on disk, and in memory when
+	// the address is still tracked.
 	m.mu.Lock()
 	if st, ok := m.addrs[ip]; ok {
 		st.obtaining = false
-		if !shuttingDown {
-			st.backoff = backoff
-			st.managed = err == nil
-		}
+		st.backoff = outcome
+		st.managed = err == nil
 	}
 	m.mu.Unlock()
 
@@ -407,21 +406,34 @@ func (m *ipCertMgr) obtain(ctx context.Context, ip string) {
 		m.clearBackoff(ctx, ip)
 		m.log.Infow("serving our own certificate for this address, no broker needed", "ip", ip)
 	case shuttingDown:
+		if outcome.Failures == 0 {
+			m.clearBackoff(ctx, ip)
+		} else {
+			m.saveBackoff(ctx, ip, outcome)
+		}
 	default:
-		m.saveBackoff(ctx, ip, backoff)
 		m.log.Errorw("could not get a certificate for our own address",
-			"ip", ip, "attempt", backoff.Failures, "retry_in", wait, "error", err)
+			"ip", ip, "attempt", outcome.Failures,
+			"retry_in", time.Until(outcome.RetryAfter).Round(time.Second), "error", err)
 	}
 	m.checkFallback()
 }
 
-// attemptCount returns how many consecutive failures ip has on record.
-// Callers hold m.mu.
-func (m *ipCertMgr) attemptCount(ip string) int {
+// backoffFor returns the wait ip is currently under. Callers hold m.mu.
+func (m *ipCertMgr) backoffFor(ip string) ipCertBackoff {
 	if st, ok := m.addrs[ip]; ok {
-		return st.backoff.Failures
+		return st.backoff
 	}
-	return 0
+	return ipCertBackoff{}
+}
+
+// nextBackoff returns the wait that follows one more failed attempt: an hour
+// after the first, doubling from there, and never more than a day so an
+// address that becomes reachable again is picked up the same day.
+func nextBackoff(current ipCertBackoff) ipCertBackoff {
+	failures := current.Failures + 1
+	wait := min(ipCertRetryInterval*time.Duration(1<<min(failures-1, 16)), ipCertRetryIntervalMax)
+	return ipCertBackoff{Failures: failures, RetryAfter: time.Now().Add(wait)}
 }
 
 // ensureCert makes ip's certificate exist and stay maintained. An address
@@ -435,7 +447,7 @@ func (m *ipCertMgr) ensureCert(ctx context.Context, ip string) error {
 		// how much of that ladder runs before our own backoff takes over.
 		// ObtainCertSync is not an alternative: it prompts on the terminal for
 		// an account email when none is configured.
-		obtainCtx, cancel := context.WithTimeout(ctx, ipCertObtainWindow)
+		obtainCtx, cancel := context.WithTimeout(ctx, m.obtainWindow)
 		defer cancel()
 		if err := m.cfg.ObtainCertAsync(obtainCtx, ip); err != nil {
 			return err
@@ -674,9 +686,7 @@ func (m *ipCertMgr) waitingForAddr() bool {
 	if len(m.addrs) > 0 || !m.listensLocally {
 		return false
 	}
-	// allowPrivate means the caller asked for connectivity checks to be
-	// skipped, so there is nothing to wait for.
-	return !m.allowPrivate && time.Now().Before(m.decideBy)
+	return time.Now().Before(m.decideBy)
 }
 
 // listensOnPort reports whether the host has a TCP listener bound to port.

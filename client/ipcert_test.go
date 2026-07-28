@@ -311,15 +311,34 @@ func TestFallbackWaitsForAPublicAddress(t *testing.T) {
 	t.Run("listening on the ACME port, address not known yet", func(t *testing.T) {
 		mgr := newTestIPCertMgr(t, log)
 		mgr.allowPrivate = false
-		mgr.reconcile(t.Context(), newAddrsHost("/ip4/192.168.1.10/tcp/443"))
+
+		// The attempt the second reconcile starts goes nowhere, since the test
+		// CA is unroutable, but it has to be finished with before the test
+		// returns or it writes into a temporary directory being deleted.
+		ctx, cancel := context.WithCancel(t.Context())
+		defer func() {
+			cancel()
+			mgr.wg.Wait()
+		}()
+
+		mgr.reconcile(ctx, newAddrsHost("/ip4/192.168.1.10/tcp/443"))
 		assertFallback(t, mgr, false)
 
 		// The address turns up a moment later and is taken from there.
-		mgr.reconcile(t.Context(), newAddrsHost("/ip4/192.168.1.10/tcp/443", "/ip4/1.2.3.4/tcp/443"))
+		mgr.reconcile(ctx, newAddrsHost("/ip4/192.168.1.10/tcp/443", "/ip4/1.2.3.4/tcp/443"))
 		assertFallback(t, mgr, false)
 		if _, ok := mgr.addrs["1.2.3.4"]; !ok {
 			t.Error("public address was not picked up once it appeared")
 		}
+	})
+
+	t.Run("an address the caller vouched for is not waited on", func(t *testing.T) {
+		// WithAllowPrivateForgeAddrs skips connectivity checks, not the wait
+		// for an address to turn up: a first pass that happens to run before
+		// the host has any is not evidence of anything.
+		mgr := newTestIPCertMgr(t, log)
+		mgr.checkFallback()
+		assertFallback(t, mgr, false)
 	})
 
 	t.Run("no listener on the ACME port", func(t *testing.T) {
@@ -390,6 +409,76 @@ func TestReconcileHonorsBackoff(t *testing.T) {
 	}
 	cancel()
 	mgr.wg.Wait()
+}
+
+// A CA that does not implement the draft profiles extension rejects an order
+// that names one, so asking for no profile has to be expressible.
+func TestIPCertProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []P2PForgeCertMgrOptions
+		want string
+	}{
+		{name: "default is what Let's Encrypt requires", want: DefaultIPCertProfile},
+		{name: "no profile", opts: []P2PForgeCertMgrOptions{WithIPCertProfile("")}, want: ""},
+		{name: "some other CA's profile", opts: []P2PForgeCertMgrOptions{WithIPCertProfile("custom")}, want: "custom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := append([]P2PForgeCertMgrOptions{
+				WithLogger(zaptest.NewLogger(t).Sugar()),
+				WithCertificateStorage(&certmagic.FileStorage{Path: filepath.Join(t.TempDir(), "certs")}),
+				WithIPCerts(),
+			}, tc.opts...)
+			mgr, err := NewP2PForgeCertMgr(opts...)
+			if err != nil {
+				t.Fatalf("NewP2PForgeCertMgr: %v", err)
+			}
+			issuer, ok := mgr.ipCerts.cfg.Issuers[0].(*certmagic.ACMEIssuer)
+			if !ok {
+				t.Fatalf("expected an ACME issuer, got %T", mgr.ipCerts.cfg.Issuers[0])
+			}
+			if issuer.Profile != tc.want {
+				t.Errorf("profile = %q, want %q", issuer.Profile, tc.want)
+			}
+		})
+	}
+}
+
+// The wait an attempt would earn is written before the attempt runs, so a
+// process that dies partway through does not come back and try again straight
+// away. Stopping on purpose is different and puts the old wait back.
+func TestBackoffIsRecordedBeforeTheAttempt(t *testing.T) {
+	log := zaptest.NewLogger(t).Sugar()
+
+	t.Run("an attempt that fails leaves an hour on disk", func(t *testing.T) {
+		mgr := newTestIPCertMgr(t, log)
+		mgr.obtainWindow = 100 * time.Millisecond // the CA is unroutable, so do not sit out the real one
+		mgr.addrs["1.2.3.4"] = &ipCertStatus{obtaining: true}
+
+		mgr.obtain(t.Context(), "1.2.3.4") // the test CA is unroutable, so this fails
+
+		got := mgr.loadBackoff(t.Context(), "1.2.3.4")
+		if got.Failures != 1 {
+			t.Errorf("failures = %d, want 1", got.Failures)
+		}
+		if wait := time.Until(got.RetryAfter); wait < ipCertRetryInterval-time.Minute {
+			t.Errorf("next attempt in %s, want about %s", wait, ipCertRetryInterval)
+		}
+	})
+
+	t.Run("stopping puts back the wait the address had", func(t *testing.T) {
+		mgr := newTestIPCertMgr(t, log)
+		mgr.obtainWindow = 100 * time.Millisecond
+		mgr.addrs["1.2.3.4"] = &ipCertStatus{obtaining: true}
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		mgr.obtain(ctx, "1.2.3.4")
+
+		if got := mgr.loadBackoff(t.Context(), "1.2.3.4"); got.Failures != 0 {
+			t.Errorf("a clean shutdown left %+v behind, want no wait", got)
+		}
+	})
 }
 
 // Renewal follows whichever config certmagic is told maintains a certificate.
@@ -565,13 +654,14 @@ func newTestIPCertMgrWithStorage(t *testing.T, log *zap.SugaredLogger, storage c
 		Logger: log.Desugar(),
 	})
 	t.Cleanup(cache.Stop)
+	profile := DefaultIPCertProfile
 	return newIPCertMgr(cache, &P2PForgeCertMgrConfig{
 		storage: storage,
 		// Unroutable on purpose: no unit test may reach a real ACME server,
 		// even if one of them starts an issuance attempt by accident.
 		caEndpoint:                 "https://127.0.0.1:0/directory",
 		ipCertPort:                 testIPCertPort,
-		ipCertProfile:              DefaultIPCertProfile,
+		ipCertProfile:              &profile,
 		allowPrivateForgeAddresses: true,
 	}, log)
 }

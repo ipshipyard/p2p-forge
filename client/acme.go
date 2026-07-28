@@ -113,7 +113,7 @@ type P2PForgeCertMgrConfig struct {
 	registrationDelay          time.Duration
 	ipCerts                    bool
 	ipCertPort                 int
-	ipCertProfile              string
+	ipCertProfile              *string // nil means DefaultIPCertProfile; empty means no profile
 }
 
 type P2PForgeCertMgrOptions func(*P2PForgeCertMgrConfig) error
@@ -317,13 +317,18 @@ func WithIPCertPort(port int) P2PForgeCertMgrOptions {
 	}
 }
 
-// WithIPCertProfile overrides the ACME profile requested for IP certificates.
-// Meant for testing: Let's Encrypt only issues them under
-// DefaultIPCertProfile, and a profile the CA does not advertise fails before
-// any order is placed.
+// WithIPCertProfile overrides the ACME profile requested for IP certificates,
+// which is DefaultIPCertProfile unless set. Pass an empty string to ask for no
+// profile at all.
+//
+// That empty case is the one that matters outside tests. Profiles are a draft
+// ACME extension, and naming one to a CA that advertises none fails before any
+// order is placed, so a private or self-hosted CA needs the profile turned
+// off. Let's Encrypt is the other way around: it issues certificates for
+// addresses under DefaultIPCertProfile and under nothing else.
 func WithIPCertProfile(profile string) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
-		config.ipCertProfile = profile
+		config.ipCertProfile = &profile
 		return nil
 	}
 }
@@ -382,8 +387,9 @@ func NewP2PForgeCertMgr(opts ...P2PForgeCertMgrOptions) (*P2PForgeCertMgr, error
 	if mgrCfg.ipCertPort == 0 {
 		mgrCfg.ipCertPort = DefaultIPCertPort
 	}
-	if mgrCfg.ipCertProfile == "" {
-		mgrCfg.ipCertProfile = DefaultIPCertProfile
+	if mgrCfg.ipCertProfile == nil {
+		profile := DefaultIPCertProfile
+		mgrCfg.ipCertProfile = &profile
 	}
 
 	// Wire up resolver for verifying DNS-01 TXT record got published correctly
