@@ -70,12 +70,16 @@ func TestLibp2pIPCertE2E(t *testing.T) {
 			// lifetime puts the renewal window about 8 seconds out, and
 			// checking every 2 seconds gives the maintenance loop several
 			// chances to notice inside the test's budget.
-			name: "a certificate that runs out is renewed",
-			// A different loopback address than the other cases: certmagic
-			// keeps in-flight challenges in one process-wide map keyed by
-			// identifier, so subtests running in parallel must not ask for the
-			// same address at the same time.
-			ip:           "127.0.0.2",
+			//
+			// Deliberately not parallel, so it has 127.0.0.1 to itself:
+			// certmagic keeps in-flight challenges in one process-wide map
+			// keyed by identifier, and two cases asking for the same address
+			// at once would overwrite each other. A second loopback address
+			// would do instead on Linux, but macOS has only 127.0.0.1 on lo0
+			// unless somebody adds one.
+			name:         "a certificate that runs out is renewed",
+			ip:           "127.0.0.1",
+			serial:       true,
 			caValidity:   25,
 			clientOpts:   []client.P2PForgeCertMgrOptions{client.WithRenewCheckInterval(2 * time.Second)},
 			awaitRenewal: true,
