@@ -905,6 +905,7 @@ var (
 
 func addrFactoryFn(skipForgeAddrs bool, hostFn func() host.Host, forgeDomain string, allowPrivateForgeAddrs bool, produceShortAddrs bool, p2pForgeWssComponent ma.Multiaddr, multiaddrs []ma.Multiaddr, ipCerts *ipCertMgr, log *zap.SugaredLogger) []ma.Multiaddr {
 	retAddrs := make([]ma.Multiaddr, 0, len(multiaddrs))
+	var withheld []ma.Multiaddr
 	var unreachableAddrs []ma.Multiaddr
 	var peerID peer.ID
 	if !skipForgeAddrs {
@@ -943,7 +944,10 @@ OUTER:
 			if !isForgeAddr && ipCerts.covers(a) {
 				// Ours to certify, but the certificate is not there yet.
 				// Announcing a TLS endpoint that cannot complete a handshake
-				// only earns failed dials.
+				// only earns failed dials. It is handed back to the manager
+				// so holding it back does not also hide it from the code
+				// that asks for the certificate.
+				withheld = append(withheld, a)
 				continue
 			}
 		}
@@ -990,6 +994,9 @@ OUTER:
 			continue
 		}
 		retAddrs = append(retAddrs, newMA)
+	}
+	if ipCerts != nil {
+		ipCerts.setWithheld(withheld)
 	}
 	return retAddrs
 }

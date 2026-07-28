@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -117,6 +119,7 @@ type ipCertMgr struct {
 	direct atomic.Bool
 
 	mu            sync.Mutex
+	withheld      []ma.Multiaddr           // addresses the factory held back for want of a certificate
 	reachable     map[string]struct{}      // addresses libp2p confirmed dialable from outside
 	haveEvent     bool                     // a reachability event has arrived
 	addrs         map[string]*ipCertStatus // keyed by IP
@@ -303,7 +306,7 @@ func (m *ipCertMgr) candidateAddrs(h host.Host) []ma.Multiaddr {
 	}
 
 	m.mu.Lock()
-	haveEvent, reachable := m.haveEvent, m.reachable
+	haveEvent, reachable, withheld := m.haveEvent, m.reachable, m.withheld
 	m.mu.Unlock()
 
 	// allowPrivate is the same escape hatch as WithAllowPrivateForgeAddrs: it
@@ -327,7 +330,7 @@ func (m *ipCertMgr) candidateAddrs(h host.Host) []ma.Multiaddr {
 		seen[string(a.Bytes())] = struct{}{}
 		out = append(out, a)
 	}
-	for _, a := range announced {
+	for _, a := range append(announced, withheld...) {
 		if _, ok := seen[string(a.Bytes())]; ok {
 			continue
 		}
@@ -358,7 +361,18 @@ func endpointKey(a ma.Multiaddr) (string, bool) {
 // currently has, and starts an issuance attempt for every address that needs
 // one and is out of backoff.
 func (m *ipCertMgr) reconcile(ctx context.Context, h host.Host) {
-	eligible := eligibleIPs(m.candidateAddrs(h), m.port, m.allowPrivate)
+	candidates := m.candidateAddrs(h)
+	eligible := eligibleIPs(candidates, m.port, m.allowPrivate)
+
+	// Storage reads, done before taking the lock: a backend can be slow or
+	// remote, and holding the lock across one stalls every attempt that is
+	// finishing and every address event that arrives.
+	backoffs := make(map[string]ipCertBackoff, len(eligible))
+	haveCert := make(map[string]bool, len(eligible))
+	for ip := range eligible {
+		backoffs[ip] = m.loadBackoff(ctx, ip)
+		haveCert[ip] = localCertExists(ctx, m.cfg, ip)
+	}
 
 	var obtain []string
 	now := time.Now()
@@ -386,7 +400,7 @@ func (m *ipCertMgr) reconcile(ctx context.Context, h host.Host) {
 	for ip := range eligible {
 		st, ok := m.addrs[ip]
 		if !ok {
-			st = &ipCertStatus{backoff: m.loadBackoff(ctx, ip)}
+			st = &ipCertStatus{backoff: backoffs[ip]}
 			m.addrs[ip] = st
 		}
 		if st.managed && m.certExpired(ip) {
@@ -405,7 +419,7 @@ func (m *ipCertMgr) reconcile(ctx context.Context, h host.Host) {
 		// all, and a certificate spent on it is one the CA cannot hand out
 		// again this week. An address we already hold a certificate for skips
 		// the wait: adopting it costs the CA nothing.
-		if now.Before(m.notBefore) && !localCertExists(ctx, m.cfg, ip) {
+		if now.Before(m.notBefore) && !haveCert[ip] {
 			m.log.Debugw("waiting before asking for a certificate for our own address",
 				"ip", ip, "waiting_for", time.Until(m.notBefore).Round(time.Second))
 			continue
@@ -419,7 +433,7 @@ func (m *ipCertMgr) reconcile(ctx context.Context, h host.Host) {
 		m.wg.Go(func() { m.obtain(ctx, ip) })
 	}
 	if len(eligible) == 0 {
-		m.reportNoAddress()
+		m.reportNoAddress(publicPorts(candidates, m.allowPrivate))
 	}
 }
 
@@ -463,6 +477,10 @@ func (m *ipCertMgr) obtain(ctx context.Context, ip string) {
 	}
 	m.mu.Unlock()
 
+	// A backend that honours cancellation drops these writes when we are
+	// stopping, which leaves the record made before the attempt in place. That
+	// is only ever a wait the next boot did not earn, so it is not worth
+	// keeping storage busy during shutdown to avoid.
 	switch {
 	case err == nil:
 		m.clearBackoff(ctx, ip)
@@ -515,7 +533,7 @@ func (m *ipCertMgr) ensureCert(ctx context.Context, ip string) error {
 		if err := m.cfg.ObtainCertAsync(obtainCtx, ip); err != nil {
 			return err
 		}
-	case m.expiredInCache(ip):
+	case m.certExpired(ip):
 		// Asking to obtain would do nothing here. certmagic treats a name
 		// whose files are already in storage as settled, however long ago the
 		// certificate ran out, so replacing it has to be asked for as a
@@ -576,14 +594,8 @@ func (m *ipCertMgr) clearBackoff(ctx context.Context, ip string) {
 // certmagic takes a moment to land in the cache, and reading that gap as expiry
 // would have this ask for a replacement seconds after a successful issuance.
 //
-// Callers hold m.mu.
+// It takes no lock of ours: the cache guards itself.
 func (m *ipCertMgr) certExpired(ip string) bool {
-	return m.expiredInCache(ip)
-}
-
-// expiredInCache is certExpired without the locking convention, for callers
-// that hold nothing.
-func (m *ipCertMgr) expiredInCache(ip string) bool {
 	certs := m.cache.AllMatchingCertificates(ip)
 	if len(certs) == 0 {
 		return false
@@ -620,24 +632,26 @@ func containsIP(names []string) bool {
 
 // SelectCertificate implements certmagic.CertSelection.
 //
-// certmagic reaches this only when its own lookup came up empty. The case that
-// matters is a client dialing an IP literal: those carry no SNI, so certmagic
-// matches on the local address of the accepted connection, which is not the
-// certified address on a node behind NAT or a cloud one-to-one mapping. Any
-// unexpired certificate we hold for an address of the same family is a better
-// answer than none.
+// certmagic calls this for every selection once it is installed, both when its
+// own lookup found candidates and when it came up empty and handed over every
+// certificate it holds.
+//
+// The case that matters is a client dialing an IP literal: those carry no SNI,
+// so certmagic matches on the local address of the accepted connection, which
+// is not the certified address on a node behind NAT or a cloud one-to-one
+// mapping. Any unexpired certificate we hold for an address of the same family
+// is a better answer than none.
+//
+// A handshake that did name something is left entirely to certmagic, expired
+// certificates and all. This selector is installed on the brokered config too,
+// and quietly changing what that path serves is not its business.
 func (m *ipCertMgr) SelectCertificate(hello *tls.ClientHelloInfo, choices []certmagic.Certificate) (certmagic.Certificate, error) {
 	// A name was asked for. certmagic looked for one covering it before
 	// asking us, so the choices here may well be for something else entirely;
 	// handing one of those out just moves the failure to the client, which is
 	// what certmagic does without a selector installed.
 	if hello.ServerName != "" {
-		for _, cert := range choices {
-			if !cert.Expired() && hello.SupportsCertificate(&cert.Certificate) == nil {
-				return cert, nil
-			}
-		}
-		return certmagic.Certificate{}, fmt.Errorf("no certificate for %q", hello.ServerName)
+		return certmagic.DefaultCertificateSelector(hello, choices)
 	}
 
 	// No name: the client dialed an address. Pick a certificate for an address
@@ -725,6 +739,19 @@ func (m *ipCertMgr) covers(addr ma.Multiaddr) bool {
 	return ok && port == m.port
 }
 
+// setWithheld records the addresses the factory held back on its last pass.
+//
+// Those addresses are still candidates. A host whose only address on the
+// certify port is a TLS WebSocket one would otherwise hide it from itself:
+// the factory drops it for want of a certificate, and a consumer that
+// announces whatever the factory returns would never show it to us again, so
+// no certificate would ever be asked for.
+func (m *ipCertMgr) setWithheld(addrs []ma.Multiaddr) {
+	m.mu.Lock()
+	m.withheld = addrs
+	m.mu.Unlock()
+}
+
 // useBroker records that this host has no listener to be validated on, so its
 // addresses are announced as libp2p reports them rather than withheld while a
 // certificate that is never coming is waited for.
@@ -739,7 +766,7 @@ func (m *ipCertMgr) useBroker() {
 // listening on the port, so the only outcomes are that the address turns up or
 // that somebody fixes the network. Saying so once at startup would bury it, so
 // it repeats every ipCertNoAddressInterval until the situation changes.
-func (m *ipCertMgr) reportNoAddress() {
+func (m *ipCertMgr) reportNoAddress(otherPorts []int) {
 	m.mu.Lock()
 	if time.Since(m.started) < ipCertNoAddressGrace {
 		m.mu.Unlock()
@@ -754,8 +781,39 @@ func (m *ipCertMgr) reportNoAddress() {
 	if !due {
 		return
 	}
-	m.log.Errorw("no public address on the port a certificate authority validates, so this node has no certificate and browsers cannot reach it; check that the port is open to the internet and forwarded to this node",
+	if len(otherPorts) > 0 {
+		// The node is reachable, just not where it has to be. This is the
+		// port mapping that forwards some other outside port to 443 on the
+		// box, which does not work: a certificate authority connects to port
+		// 443 on the address itself and nowhere else.
+		m.log.Errorw("this node is reachable, but not on the port a certificate authority validates, so it has no certificate and browsers cannot reach it; the public port has to be the same one, not just the local one",
+			"port", m.port, "public_ports_found", otherPorts, "next_report_in", ipCertNoAddressInterval)
+		return
+	}
+	m.log.Errorw("no public address at all on the port a certificate authority validates, so this node has no certificate and browsers cannot reach it; check that the port is open to the internet and forwarded to this node",
 		"port", m.port, "next_report_in", ipCertNoAddressInterval)
+}
+
+// publicPorts returns the TCP ports this node has a public address on, lowest
+// first, for telling an operator that the node is reachable but not where it
+// needs to be.
+func publicPorts(addrs []ma.Multiaddr, allowPrivate bool) []int {
+	seen := make(map[int]struct{}, len(addrs))
+	for _, a := range addrs {
+		if isRelayAddr(a) || (!allowPrivate && !isPublicAddr(a)) {
+			continue
+		}
+		p, err := a.ValueForProtocol(ma.P_TCP)
+		if err != nil {
+			continue
+		}
+		if port, err := strconv.Atoi(p); err == nil {
+			seen[port] = struct{}{}
+		}
+	}
+	ports := slices.Collect(maps.Keys(seen))
+	slices.Sort(ports)
+	return ports
 }
 
 // listensOnPort reports whether this host can answer a TLS-ALPN-01 challenge on

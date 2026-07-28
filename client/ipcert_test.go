@@ -326,48 +326,105 @@ func TestListensOnPort(t *testing.T) {
 }
 
 // A node that listens on the port but has no public address there gets no
-// certificate and no broker either, so the reason has to be in the log, and it
-// has to stay there: said once at startup it would scroll away long before
-// anyone came looking.
+// certificate and no broker either, so the reason has to be in the log, it has
+// to say which of the two situations this is, and it has to stay there: said
+// once at startup it would scroll away long before anyone came looking.
 func TestNoAddressIsReportedAndRepeated(t *testing.T) {
-	core, logs := observer.New(zapcore.ErrorLevel)
-	mgr := newTestIPCertMgr(t, zap.New(core).Sugar())
+	listen := addrList(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d/tls/ws", testIPCertPort))
 
-	host := &addrsHost{
-		addrs:  addrList("/ip4/192.168.1.10/tcp/4001"), // nothing on the ACME port
-		listen: addrList(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d/tls/ws", testIPCertPort)),
+	t.Run("reachable, but not on the port that gets validated", func(t *testing.T) {
+		core, logs := observer.New(zapcore.ErrorLevel)
+		mgr := newTestIPCertMgr(t, zap.New(core).Sugar())
+		mgr.started = time.Now().Add(-ipCertNoAddressGrace - time.Minute)
+
+		// The mapping forwards some outside port to 443 on this box, which
+		// cannot work: an authority connects to 443 on the address itself.
+		mgr.reconcile(t.Context(), &addrsHost{
+			addrs:  addrList("/ip4/1.2.3.4/tcp/8443"),
+			listen: listen,
+		})
+
+		if logs.Len() != 1 {
+			t.Fatalf("logged %d errors, want one", logs.Len())
+		}
+		entry := logs.All()[0]
+		if !strings.Contains(entry.Message, "public port has to be the same one") {
+			t.Errorf("error reads %q, want it to say the public port must match", entry.Message)
+		}
+		if fields := entry.ContextMap(); fmt.Sprint(fields["public_ports_found"]) != "[8443]" {
+			t.Errorf("error reported ports %v, want the 8443 it can see", fields["public_ports_found"])
+		}
+	})
+
+	t.Run("no public address at all", func(t *testing.T) {
+		core, logs := observer.New(zapcore.ErrorLevel)
+		mgr := newTestIPCertMgr(t, zap.New(core).Sugar())
+		mgr.allowPrivate = false
+		mgr.started = time.Now().Add(-ipCertNoAddressGrace - time.Minute)
+
+		host := &addrsHost{addrs: addrList("/ip4/192.168.1.10/tcp/4001"), listen: listen}
+		mgr.reconcile(t.Context(), host)
+		if logs.Len() != 1 {
+			t.Fatalf("logged %d errors, want one", logs.Len())
+		}
+		if msg := logs.All()[0].Message; !strings.Contains(msg, "no public address at all") {
+			t.Errorf("error reads %q, want it to say there is no public address", msg)
+		}
+
+		// Reconciling again a moment later says nothing new.
+		mgr.reconcile(t.Context(), host)
+		if logs.Len() != 1 {
+			t.Errorf("repeated the error %d times in a row, want it rate limited", logs.Len())
+		}
+
+		// An hour on, it is worth saying again.
+		mgr.mu.Lock()
+		mgr.lastNoAddrLog = time.Now().Add(-ipCertNoAddressInterval - time.Minute)
+		mgr.mu.Unlock()
+		mgr.reconcile(t.Context(), host)
+		if logs.Len() != 2 {
+			t.Errorf("logged %d errors after the interval, want a second one", logs.Len())
+		}
+	})
+
+	t.Run("nothing is said while the node is still starting", func(t *testing.T) {
+		core, logs := observer.New(zapcore.ErrorLevel)
+		mgr := newTestIPCertMgr(t, zap.New(core).Sugar())
+		mgr.reconcile(t.Context(), &addrsHost{listen: listen})
+		if logs.Len() != 0 {
+			t.Errorf("complained %d times during the grace period, want silence", logs.Len())
+		}
+	})
+}
+
+// A host whose only address on the certify port is a TLS WebSocket one has to
+// be able to get started. The factory withholds that address while there is no
+// certificate for it, so a consumer that announces whatever the factory returns
+// would hide it from the code whose job is to ask for the certificate, and
+// nothing would ever happen.
+func TestWithheldAddressStaysACandidate(t *testing.T) {
+	log := zaptest.NewLogger(t).Sugar()
+	mgr := newTestIPCertMgr(t, log)
+	mgr.allowPrivate = false
+
+	announced := multiaddr.StringCast("/ip4/1.2.3.4/tcp/443/tls/ws")
+	wssComponent := multiaddr.StringCast("/tls/sni/wildcard." + testForgeDomain + "/ws")
+
+	// What a consumer sees: the factory holds the address back, because there
+	// is nothing yet to complete a handshake with.
+	got := addrFactoryFn(true, func() host.Host { return nil }, testForgeDomain, true, true,
+		wssComponent, []multiaddr.Multiaddr{announced}, mgr, log)
+	if len(got) != 0 {
+		t.Fatalf("announced %v, want the address withheld until it is certified", got)
 	}
 
-	// Nothing is wrong yet on a node that started a moment ago.
-	mgr.reconcile(t.Context(), host)
-	if logs.Len() != 0 {
-		t.Fatalf("complained %d times during the grace period, want silence", logs.Len())
+	// What the manager sees: the same address, still a candidate.
+	h := &addrsHost{
+		addrs:  []multiaddr.Multiaddr{}, // the factory dropped it
+		listen: addrList("/ip4/0.0.0.0/tcp/443/tls/ws"),
 	}
-
-	mgr.mu.Lock()
-	mgr.started = time.Now().Add(-ipCertNoAddressGrace - time.Minute)
-	mgr.mu.Unlock()
-	mgr.reconcile(t.Context(), host)
-	if logs.Len() != 1 {
-		t.Fatalf("logged %d errors, want the one saying there is no address to certify", logs.Len())
-	}
-	if entry := logs.All()[0]; !strings.Contains(entry.Message, "no public address") {
-		t.Errorf("error reads %q, want it to name the missing address", entry.Message)
-	}
-
-	// Reconciling again a moment later says nothing new.
-	mgr.reconcile(t.Context(), host)
-	if logs.Len() != 1 {
-		t.Errorf("repeated the error %d times in a row, want it rate limited", logs.Len())
-	}
-
-	// An hour on, it is worth saying again.
-	mgr.mu.Lock()
-	mgr.lastNoAddrLog = time.Now().Add(-ipCertNoAddressInterval - time.Minute)
-	mgr.mu.Unlock()
-	mgr.reconcile(t.Context(), host)
-	if logs.Len() != 2 {
-		t.Errorf("logged %d errors after the interval, want a second one", logs.Len())
+	if _, ok := eligibleIPs(mgr.candidateAddrs(h), testIPCertPort, false)["1.2.3.4"]; !ok {
+		t.Error("the withheld address never came back as a candidate, so no certificate would ever be asked for")
 	}
 }
 
