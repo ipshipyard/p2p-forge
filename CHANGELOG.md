@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+## [v0.10.1] - 2026-07-29
+
+### Fixed
+- ✨ A node that comes back online after its certificate expired now gets a fresh certificate instead of staying stuck without one. Renewing an expired certificate cannot succeed: the renewal order references it through the ACME ARI `replaces` field, and the CA rejects orders that reference a certificate it no longer considers current (Let's Encrypt returns HTTP 404 `urn:ietf:params:acme:error:malformed`), which certmagic retried forever. On startup the client now discards an expired certificate found in local storage and requests a new one from scratch, without the `replaces` field.[^ari-replaces]
+
+[^ari-replaces]: [RFC 9773, section 5](https://www.rfc-editor.org/rfc/rfc9773.html#section-5): servers SHOULD validate the certificate referenced by `replaces` and SHOULD reject the newOrder request when those checks fail.
+
 ## [v0.10.0] - 2026-07-17
 
 ### Added
