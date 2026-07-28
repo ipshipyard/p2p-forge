@@ -53,6 +53,8 @@ func TestLibp2pIPCertE2E(t *testing.T) {
 		clientOpts []client.P2PForgeCertMgrOptions
 		// awaitRenewal waits for a second certificate to replace the first.
 		awaitRenewal bool
+		// serial keeps this case out of the parallel phase.
+		serial bool
 	}{
 		{
 			name: "IPv4",
@@ -80,7 +82,9 @@ func TestLibp2pIPCertE2E(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			if !tt.serial {
+				t.Parallel()
+			}
 			testIPCert(t, tt.ip, tt.caValidity, tt.awaitRenewal, tt.clientOpts)
 		})
 	}
