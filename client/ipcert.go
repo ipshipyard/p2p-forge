@@ -519,26 +519,23 @@ func nextBackoff(current ipCertBackoff) ipCertBackoff {
 // whose certificate is already in storage, after a restart or when a dynamic
 // address comes back, is adopted without contacting the CA.
 func (m *ipCertMgr) ensureCert(ctx context.Context, ip string) error {
-	// One bounded attempt, whichever kind is called for. The async calls
-	// otherwise retry for up to a month on certmagic's own ladder, which for an
-	// address the CA cannot reach means a steady stream of failed
-	// authorizations; the deadline caps how much of that ladder runs before our
-	// own backoff takes over. The sync calls are not an alternative: they
-	// prompt on the terminal for an account email when none is configured.
-	obtainCtx, cancel := context.WithTimeout(ctx, m.obtainWindow)
-	defer cancel()
+	// An address whose certificate ran out needs a fresh one, not a renewal.
+	// The authority rejects an order whose ARI 'replaces' names a certificate
+	// it no longer considers current, so a renewal here would be retried
+	// forever and never succeed. Discarding what is stored routes this through
+	// issuance instead. See dropLocalCertIfExpired.
+	dropLocalCertIfExpired(ctx, m.log, m.cfg, ip)
 
-	switch {
-	case !localCertExists(ctx, m.cfg, ip):
+	if !localCertExists(ctx, m.cfg, ip) {
+		// One bounded attempt. ObtainCertAsync otherwise retries for up to a
+		// month on certmagic's own ladder, which for an address the CA cannot
+		// reach means a steady stream of failed authorizations; the deadline
+		// caps how much of that ladder runs before our own backoff takes over.
+		// ObtainCertSync is not an alternative: it prompts on the terminal for
+		// an account email when none is configured.
+		obtainCtx, cancel := context.WithTimeout(ctx, m.obtainWindow)
+		defer cancel()
 		if err := m.cfg.ObtainCertAsync(obtainCtx, ip); err != nil {
-			return err
-		}
-	case m.certExpired(ip):
-		// Asking to obtain would do nothing here. certmagic treats a name
-		// whose files are already in storage as settled, however long ago the
-		// certificate ran out, so replacing it has to be asked for as a
-		// renewal.
-		if err := m.cfg.RenewCertAsync(obtainCtx, ip, false); err != nil {
 			return err
 		}
 	}

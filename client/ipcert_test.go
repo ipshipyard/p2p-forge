@@ -273,6 +273,28 @@ func TestExpiredCertificateIsTakenBack(t *testing.T) {
 	}
 }
 
+// An expired certificate is discarded rather than renewed. The authority
+// rejects an order whose ARI 'replaces' names a certificate it no longer
+// considers current, so renewing one that has lapsed never succeeds; issuance
+// has to start from nothing. See dropLocalCertIfExpired.
+func TestExpiredCertificateIsDiscardedNotRenewed(t *testing.T) {
+	log := zaptest.NewLogger(t).Sugar()
+	mgr := newTestIPCertMgr(t, log)
+	mgr.obtainWindow = 100 * time.Millisecond
+	cacheExpiredTestCert(t, mgr, "1.2.3.4")
+
+	if !localCertExists(t.Context(), mgr.cfg, "1.2.3.4") {
+		t.Fatal("the expired certificate was not stored to begin with")
+	}
+
+	// The attempt itself goes nowhere, since the test authority is unroutable.
+	_ = mgr.ensureCert(t.Context(), "1.2.3.4")
+
+	if localCertExists(t.Context(), mgr.cfg, "1.2.3.4") {
+		t.Error("the expired certificate is still in storage, so the next attempt would be a renewal the authority refuses")
+	}
+}
+
 // A host that took the broker path must not have its TLS listener withheld: no
 // certificate for an address is coming, so withholding it would silence the
 // listener for good.
