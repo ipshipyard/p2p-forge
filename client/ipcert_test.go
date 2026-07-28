@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +23,9 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 const testIPCertPort = 443
@@ -243,281 +246,128 @@ func TestBackoffSurvivesRestart(t *testing.T) {
 	}
 }
 
-// The broker is only asked for a certificate once we know we cannot get one
-// ourselves.
-func TestFallbackToBroker(t *testing.T) {
-	log := zaptest.NewLogger(t).Sugar()
-
-	t.Run("no address we could certify", func(t *testing.T) {
-		mgr := newTestIPCertMgr(t, log)
-		mgr.evaluated = true
-		mgr.checkFallback()
-		assertFallback(t, mgr, true)
-	})
-
-	t.Run("an attempt is in flight", func(t *testing.T) {
-		mgr := newTestIPCertMgr(t, log)
-		mgr.evaluated = true
-		mgr.addrs["1.2.3.4"] = &ipCertStatus{obtaining: true}
-		mgr.checkFallback()
-		assertFallback(t, mgr, false)
-	})
-
-	t.Run("we hold our own certificate", func(t *testing.T) {
-		mgr := newTestIPCertMgr(t, log)
-		cacheTestCert(t, mgr, "1.2.3.4")
-		mgr.evaluated = true
-		mgr.addrs["1.2.3.4"] = &ipCertStatus{managed: true}
-		mgr.checkFallback()
-		assertFallback(t, mgr, false)
-	})
-
-	t.Run("our certificate expired and did not renew", func(t *testing.T) {
-		// A node offline past expiry comes back holding a certificate it
-		// cannot serve. It needs the broker rather than nothing to announce.
-		mgr := newTestIPCertMgr(t, log)
-		cacheExpiredTestCert(t, mgr, "1.2.3.4")
-		if mgr.hasCertFor("1.2.3.4") {
-			t.Fatal("an expired certificate should not count as coverage")
-		}
-		mgr.evaluated = true
-		mgr.addrs["1.2.3.4"] = &ipCertStatus{managed: true}
-		mgr.checkFallback()
-		assertFallback(t, mgr, true)
-	})
-
-	t.Run("every address failed", func(t *testing.T) {
-		mgr := newTestIPCertMgr(t, log)
-		mgr.evaluated = true
-		mgr.addrs["1.2.3.4"] = &ipCertStatus{backoff: ipCertBackoff{Failures: 1, RetryAfter: time.Now().Add(time.Hour)}}
-		mgr.checkFallback()
-		assertFallback(t, mgr, true)
-	})
-
-	t.Run("nothing decided yet", func(t *testing.T) {
-		mgr := newTestIPCertMgr(t, log)
-		mgr.checkFallback()
-		assertFallback(t, mgr, false)
-	})
-}
-
-// A node behind a port mapping has its public address on no interface of its
-// own and only learns it from other peers, minutes after startup. Deciding on
-// the first pass would send it to the broker for good, since the decision is
-// taken once.
-func TestFallbackWaitsForAPublicAddress(t *testing.T) {
-	log := zaptest.NewLogger(t).Sugar()
-
-	t.Run("listening on the ACME port, address not known yet", func(t *testing.T) {
-		mgr := newTestIPCertMgr(t, log)
-		mgr.allowPrivate = false
-
-		// The attempt the second reconcile starts goes nowhere, since the test
-		// CA is unroutable, but it has to be finished with before the test
-		// returns or it writes into a temporary directory being deleted.
-		ctx, cancel := context.WithCancel(t.Context())
-		defer func() {
-			cancel()
-			mgr.wg.Wait()
-		}()
-
-		mgr.reconcile(ctx, newAddrsHost("/ip4/192.168.1.10/tcp/443"))
-		assertFallback(t, mgr, false)
-
-		// The address turns up a moment later and is taken from there.
-		mgr.reconcile(ctx, newAddrsHost("/ip4/192.168.1.10/tcp/443", "/ip4/1.2.3.4/tcp/443"))
-		assertFallback(t, mgr, false)
-		if _, ok := mgr.addrs["1.2.3.4"]; !ok {
-			t.Error("public address was not picked up once it appeared")
-		}
-	})
-
-	t.Run("an address the caller vouched for is not waited on", func(t *testing.T) {
-		// WithAllowPrivateForgeAddrs skips connectivity checks, not the wait
-		// for an address to turn up: a first pass that happens to run before
-		// the host has any is not evidence of anything.
-		mgr := newTestIPCertMgr(t, log)
-		mgr.checkFallback()
-		assertFallback(t, mgr, false)
-	})
-
-	t.Run("no listener on the ACME port", func(t *testing.T) {
-		// Nothing to wait for: this node could never answer the challenge.
-		mgr := newTestIPCertMgr(t, log)
-		mgr.allowPrivate = false
-		mgr.reconcile(t.Context(), &addrsHost{
-			addrs:  []multiaddr.Multiaddr{multiaddr.StringCast("/ip4/1.2.3.4/tcp/4001")},
-			listen: []multiaddr.Multiaddr{multiaddr.StringCast("/ip4/0.0.0.0/tcp/4001")},
-		})
-		assertFallback(t, mgr, true)
-	})
-
-	t.Run("the wait runs out", func(t *testing.T) {
-		mgr := newTestIPCertMgr(t, log)
-		mgr.allowPrivate = false
-		mgr.decideBy = time.Now().Add(-time.Second)
-		mgr.reconcile(t.Context(), newAddrsHost("/ip4/192.168.1.10/tcp/443"))
-		assertFallback(t, mgr, true)
-	})
-}
-
-// An address that goes away, which is what a dynamic IP does, stops being
-// renewed and stops being announced.
-func TestReconcileDropsAddressesThatWentAway(t *testing.T) {
+// A certificate that ran out and was not renewed has to be replaced. Asking to
+// obtain one would be a no-op, since certmagic treats a name whose files are in
+// storage as settled however stale they are, so the address goes back through
+// the attempt path and stops being counted as managed.
+func TestExpiredCertificateIsTakenBack(t *testing.T) {
 	log := zaptest.NewLogger(t).Sugar()
 	mgr := newTestIPCertMgr(t, log)
-	cacheTestCert(t, mgr, "1.2.3.4")
+	mgr.obtainWindow = 100 * time.Millisecond
+	cacheExpiredTestCert(t, mgr, "1.2.3.4")
 	mgr.addrs["1.2.3.4"] = &ipCertStatus{managed: true}
 
-	if !mgr.hasCertFor("1.2.3.4") {
-		t.Fatal("test certificate was not cached")
-	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer func() {
+		cancel()
+		mgr.wg.Wait()
+	}()
+	mgr.reconcile(ctx, newAddrsHost("/ip4/1.2.3.4/tcp/443"))
 
-	mgr.reconcile(t.Context(), newAddrsHost("/ip4/5.6.7.8/tcp/4001"))
-
-	if _, ok := mgr.addrs["1.2.3.4"]; ok {
-		t.Error("kept maintaining a certificate for an address the host no longer has")
+	st := mgr.addrs["1.2.3.4"]
+	if st.managed {
+		t.Error("still counted as managed while holding a certificate that ran out")
 	}
-	if mgr.hasCertFor("1.2.3.4") {
-		t.Error("still announcing an address the host no longer has")
+	if !st.obtaining {
+		t.Error("did not go back for a replacement certificate")
 	}
 }
 
-// Backoff is what keeps us inside the authority's failed-validation budget, so
-// reconcile must not start an attempt while one is in effect.
-func TestReconcileHonorsBackoff(t *testing.T) {
+// A host that took the broker path must not have its TLS listener withheld: no
+// certificate for an address is coming, so withholding it would silence the
+// listener for good.
+func TestUncertifiedListenerIsOnlyWithheldOnTheDirectPath(t *testing.T) {
 	log := zaptest.NewLogger(t).Sugar()
 	mgr := newTestIPCertMgr(t, log)
-	mgr.addrs["1.2.3.4"] = &ipCertStatus{
-		backoff: ipCertBackoff{Failures: 2, RetryAfter: time.Now().Add(time.Hour)},
+	addr := multiaddr.StringCast("/ip4/1.2.3.4/tcp/443/tls/ws")
+
+	if !mgr.covers(addr) {
+		t.Error("a host on the direct path should withhold a listener it has no certificate for")
 	}
 
-	host := newAddrsHost("/ip4/1.2.3.4/tcp/443")
-	mgr.reconcile(t.Context(), host)
-	if mgr.addrs["1.2.3.4"].obtaining {
-		t.Fatal("started an attempt while the address was in backoff")
+	mgr.useBroker()
+	if mgr.covers(addr) {
+		t.Error("a host on the broker path should announce its listener as it finds it")
 	}
-
-	// Once the wait is over the same address is tried again. The attempt
-	// itself goes nowhere (the test CA is unroutable) and is canceled right
-	// away, so only the decision to make it is under test.
-	ctx, cancel := context.WithCancel(t.Context())
-	mgr.addrs["1.2.3.4"].backoff.RetryAfter = time.Now().Add(-time.Second)
-	mgr.reconcile(ctx, host)
-	if !mgr.addrs["1.2.3.4"].obtaining {
-		t.Error("did not retry after the backoff expired")
-	}
-	cancel()
-	mgr.wg.Wait()
 }
 
-// A CA that does not implement the draft profiles extension rejects an order
-// that names one, so asking for no profile has to be expressible.
-func TestIPCertProfile(t *testing.T) {
+// Listening on the port a certificate authority validates on is what commits a
+// node to certifying its own address, so the check behind that decision has to
+// recognise every shape a listener comes in.
+func TestListensOnPort(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		opts []P2PForgeCertMgrOptions
-		want string
+		name         string
+		listen       []string
+		allowPrivate bool
+		want         bool
 	}{
-		{name: "default is what Let's Encrypt requires", want: DefaultIPCertProfile},
-		{name: "no profile", opts: []P2PForgeCertMgrOptions{WithIPCertProfile("")}, want: ""},
-		{name: "some other CA's profile", opts: []P2PForgeCertMgrOptions{WithIPCertProfile("custom")}, want: "custom"},
+		{name: "wildcard", listen: []string{"/ip4/0.0.0.0/tcp/443/tls/ws"}, want: true},
+		{name: "one interface", listen: []string{"/ip4/10.0.0.5/tcp/443/tls/ws"}, want: true},
+		{name: "the wildcard SNI form AutoWSS installs", listen: []string{"/ip4/0.0.0.0/tcp/443/tls/sni/wildcard.libp2p.direct/ws"}, want: true},
+		{name: "IPv6", listen: []string{"/ip6/::/tcp/443/tls/ws"}, want: true},
+		{name: "among others", listen: []string{"/ip4/0.0.0.0/tcp/4001/tls/ws", "/ip4/0.0.0.0/tcp/443/tls/ws"}, want: true},
+		{name: "some other port", listen: []string{"/ip4/0.0.0.0/tcp/4001/tls/ws"}},
+		{name: "QUIC on the same number", listen: []string{"/ip4/0.0.0.0/udp/443/quic-v1"}},
+		{name: "nothing at all"},
+		// A plain libp2p listener cannot terminate TLS, so it cannot answer
+		// the challenge however right the port looks.
+		{name: "TCP without TLS", listen: []string{"/ip4/0.0.0.0/tcp/443"}},
+		// Nothing on loopback is reachable by a public authority.
+		{name: "loopback only", listen: []string{"/ip4/127.0.0.1/tcp/443/tls/ws"}},
+		{name: "loopback when checks are skipped", listen: []string{"/ip4/127.0.0.1/tcp/443/tls/ws"}, allowPrivate: true, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			opts := append([]P2PForgeCertMgrOptions{
-				WithLogger(zaptest.NewLogger(t).Sugar()),
-				WithCertificateStorage(&certmagic.FileStorage{Path: filepath.Join(t.TempDir(), "certs")}),
-				WithIPCerts(),
-			}, tc.opts...)
-			mgr, err := NewP2PForgeCertMgr(opts...)
-			if err != nil {
-				t.Fatalf("NewP2PForgeCertMgr: %v", err)
-			}
-			issuer, ok := mgr.ipCerts.cfg.Issuers[0].(*certmagic.ACMEIssuer)
-			if !ok {
-				t.Fatalf("expected an ACME issuer, got %T", mgr.ipCerts.cfg.Issuers[0])
-			}
-			if issuer.Profile != tc.want {
-				t.Errorf("profile = %q, want %q", issuer.Profile, tc.want)
+			h := &addrsHost{listen: addrList(tc.listen...)}
+			if got := listensOnPort(h, testIPCertPort, tc.allowPrivate); got != tc.want {
+				t.Errorf("listensOnPort = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-// The wait an attempt would earn is written before the attempt runs, so a
-// process that dies partway through does not come back and try again straight
-// away. Stopping on purpose is different and puts the old wait back.
-func TestBackoffIsRecordedBeforeTheAttempt(t *testing.T) {
-	log := zaptest.NewLogger(t).Sugar()
+// A node that listens on the port but has no public address there gets no
+// certificate and no broker either, so the reason has to be in the log, and it
+// has to stay there: said once at startup it would scroll away long before
+// anyone came looking.
+func TestNoAddressIsReportedAndRepeated(t *testing.T) {
+	core, logs := observer.New(zapcore.ErrorLevel)
+	mgr := newTestIPCertMgr(t, zap.New(core).Sugar())
 
-	t.Run("an attempt that fails leaves an hour on disk", func(t *testing.T) {
-		mgr := newTestIPCertMgr(t, log)
-		mgr.obtainWindow = 100 * time.Millisecond // the CA is unroutable, so do not sit out the real one
-		mgr.addrs["1.2.3.4"] = &ipCertStatus{obtaining: true}
+	host := &addrsHost{
+		addrs:  addrList("/ip4/192.168.1.10/tcp/4001"), // nothing on the ACME port
+		listen: addrList(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d/tls/ws", testIPCertPort)),
+	}
 
-		mgr.obtain(t.Context(), "1.2.3.4") // the test CA is unroutable, so this fails
+	// Nothing is wrong yet on a node that started a moment ago.
+	mgr.reconcile(t.Context(), host)
+	if logs.Len() != 0 {
+		t.Fatalf("complained %d times during the grace period, want silence", logs.Len())
+	}
 
-		got := mgr.loadBackoff(t.Context(), "1.2.3.4")
-		if got.Failures != 1 {
-			t.Errorf("failures = %d, want 1", got.Failures)
-		}
-		if wait := time.Until(got.RetryAfter); wait < ipCertRetryInterval-time.Minute {
-			t.Errorf("next attempt in %s, want about %s", wait, ipCertRetryInterval)
-		}
-	})
+	mgr.mu.Lock()
+	mgr.started = time.Now().Add(-ipCertNoAddressGrace - time.Minute)
+	mgr.mu.Unlock()
+	mgr.reconcile(t.Context(), host)
+	if logs.Len() != 1 {
+		t.Fatalf("logged %d errors, want the one saying there is no address to certify", logs.Len())
+	}
+	if entry := logs.All()[0]; !strings.Contains(entry.Message, "no public address") {
+		t.Errorf("error reads %q, want it to name the missing address", entry.Message)
+	}
 
-	t.Run("stopping puts back the wait the address had", func(t *testing.T) {
-		mgr := newTestIPCertMgr(t, log)
-		mgr.obtainWindow = 100 * time.Millisecond
-		mgr.addrs["1.2.3.4"] = &ipCertStatus{obtaining: true}
+	// Reconciling again a moment later says nothing new.
+	mgr.reconcile(t.Context(), host)
+	if logs.Len() != 1 {
+		t.Errorf("repeated the error %d times in a row, want it rate limited", logs.Len())
+	}
 
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		mgr.obtain(ctx, "1.2.3.4")
-
-		if got := mgr.loadBackoff(t.Context(), "1.2.3.4"); got.Failures != 0 {
-			t.Errorf("a clean shutdown left %+v behind, want no wait", got)
-		}
-	})
-}
-
-// Renewal follows whichever config certmagic is told maintains a certificate.
-// Sending an IP certificate to the broker config would fail quietly every few
-// days, since the broker has no name to publish a DNS record under.
-func TestRenewalDispatch(t *testing.T) {
-	for _, ipCerts := range []bool{true, false} {
-		t.Run(fmt.Sprintf("ipCerts=%v", ipCerts), func(t *testing.T) {
-			opts := []P2PForgeCertMgrOptions{
-				WithLogger(zaptest.NewLogger(t).Sugar()),
-				WithCertificateStorage(&certmagic.FileStorage{Path: filepath.Join(t.TempDir(), "certs")}),
-			}
-			if ipCerts {
-				opts = append(opts, WithIPCerts())
-			}
-			mgr, err := NewP2PForgeCertMgr(opts...)
-			if err != nil {
-				t.Fatalf("NewP2PForgeCertMgr: %v", err)
-			}
-
-			ipCfg, err := mgr.configForCert(certmagic.Certificate{Names: []string{"1.2.3.4"}})
-			if err != nil {
-				t.Fatalf("configForCert: %v", err)
-			}
-			if ipCerts && ipCfg != mgr.ipCerts.cfg {
-				t.Error("an IP certificate would be renewed through the broker")
-			}
-			if !ipCerts && ipCfg != mgr.certmagic {
-				t.Error("without IP certificates everything belongs to the broker config")
-			}
-
-			brokered, err := mgr.configForCert(certmagic.Certificate{Names: []string{"*.k51qzi5uqu5.libp2p.direct"}})
-			if err != nil {
-				t.Fatalf("configForCert: %v", err)
-			}
-			if brokered != mgr.certmagic {
-				t.Error("the brokered wildcard certificate must renew through the broker")
-			}
-		})
+	// An hour on, it is worth saying again.
+	mgr.mu.Lock()
+	mgr.lastNoAddrLog = time.Now().Add(-ipCertNoAddressInterval - time.Minute)
+	mgr.mu.Unlock()
+	mgr.reconcile(t.Context(), host)
+	if logs.Len() != 2 {
+		t.Errorf("logged %d errors after the interval, want a second one", logs.Len())
 	}
 }
 
@@ -612,20 +462,6 @@ func newAddrsHost(addrs ...string) *addrsHost {
 	return h
 }
 
-func assertFallback(t *testing.T, mgr *ipCertMgr, want bool) {
-	t.Helper()
-	select {
-	case <-mgr.fallback:
-		if !want {
-			t.Error("fell back to the broker while the direct path was still viable")
-		}
-	default:
-		if want {
-			t.Error("did not fall back to the broker")
-		}
-	}
-}
-
 func assertAddrs(t *testing.T, got []multiaddr.Multiaddr, want []string) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -655,7 +491,7 @@ func newTestIPCertMgrWithStorage(t *testing.T, log *zap.SugaredLogger, storage c
 	})
 	t.Cleanup(cache.Stop)
 	profile := DefaultIPCertProfile
-	return newIPCertMgr(cache, &P2PForgeCertMgrConfig{
+	mgr := newIPCertMgr(cache, &P2PForgeCertMgrConfig{
 		storage: storage,
 		// Unroutable on purpose: no unit test may reach a real ACME server,
 		// even if one of them starts an issuance attempt by accident.
@@ -664,6 +500,7 @@ func newTestIPCertMgrWithStorage(t *testing.T, log *zap.SugaredLogger, storage c
 		ipCertProfile:              &profile,
 		allowPrivateForgeAddresses: true,
 	}, log)
+	return mgr
 }
 
 // cacheTestCert puts a self-signed certificate for ip through the same

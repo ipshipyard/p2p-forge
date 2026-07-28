@@ -275,21 +275,19 @@ func WithShortForgeAddrs(produceShortAddrs bool) P2PForgeCertMgrOptions {
 // TLS-ALPN-01 challenge, which the node answers on the TCP port it already
 // listens on.
 //
-// This works only for a libp2p host that listens on TCP port 443, and only if
-// that port is dialable from the internet. The TLS-ALPN-01 challenge is
-// defined on port 443 and nowhere else (RFC 8737, section 3), and DNS-01, the
-// challenge the broker exists to answer, cannot be used for an address that
-// has no name (RFC 8738, section 4). So there is no way to certify an address
-// on any other port. Behind a router, forward external port 443 to port 443 on
-// this node.
+// Listening on port 443 is what puts a host on this path, and there is no way
+// off it. A host that listens there asks only for a certificate for its own
+// address; one that does not registers a name with the broker instead. The
+// choice follows the listener, not how the attempt goes: when issuance fails
+// it is retried with a growing wait and logged as an error, and the host never
+// quietly ends up with a brokered name it did not ask for.
 //
-// A node that cannot bind port 443, or whose port 443 the internet cannot
-// reach, should stay with the broker and its name-based certificate, which has
-// no such requirement. Enabling this option on such a node is not harmful: the
-// broker is used as before, either because no address of ours is reachable on
-// the port or because validation failed. It does mean a wasted validation
-// attempt and a delay before the broker takes over, so on a node known not to
-// qualify, leave it off.
+// That makes port 443 a requirement rather than a preference. The TLS-ALPN-01
+// challenge is defined on port 443 and nowhere else (RFC 8737, section 3), and
+// DNS-01, the challenge the broker answers, cannot be used for an address that
+// has no name (RFC 8738, section 4). Behind a router, forward external port 443
+// to port 443 on this host. A host that cannot bind 443, or whose 443 the
+// internet cannot reach, wants this option off and the broker on.
 //
 // A certificate covers an address rather than a port, so once one exists every
 // TLS listener on that address is announced with it.
@@ -303,10 +301,11 @@ func WithIPCerts() P2PForgeCertMgrOptions {
 // WithIPCertPort overrides the TCP port the CA is expected to connect to when
 // validating an IP address. Meant for testing against a local ACME server.
 //
-// It does not make a node on some other port certifiable: a public CA always
-// connects to DefaultIPCertPort and ignores anything set here, so pointing
-// this at another port in production only stops certificates from being
-// issued.
+// It does not make a host on some other port certifiable: a public CA always
+// connects to DefaultIPCertPort and ignores anything set here. Pointing this
+// at another port in production leaves the host on this path with no
+// certificate at all, since there is no broker behind it to catch the
+// failure.
 func WithIPCertPort(port int) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
 		if port < 1 || port > 65535 {
@@ -325,7 +324,9 @@ func WithIPCertPort(port int) P2PForgeCertMgrOptions {
 // ACME extension, and naming one to a CA that advertises none fails before any
 // order is placed, so a private or self-hosted CA needs the profile turned
 // off. Let's Encrypt is the other way around: it issues certificates for
-// addresses under DefaultIPCertProfile and under nothing else.
+// addresses under DefaultIPCertProfile and under nothing else. A host on this
+// path has no second source of certificates, so naming a profile the CA does
+// not advertise leaves it with none.
 func WithIPCertProfile(profile string) P2PForgeCertMgrOptions {
 	return func(config *P2PForgeCertMgrConfig) error {
 		config.ipCertProfile = &profile
@@ -534,37 +535,28 @@ func (m *P2PForgeCertMgr) Start() error {
 		log := m.log.Named("start")
 		h := m.hostFn()
 
+		// A node that terminates TLS on the port a CA validates on certifies
+		// its own address and has no use for a broker, so it never talks to
+		// one. A node that does not registers a name, as before.
+		//
+		// The choice is made once, here, from something the node knows about
+		// itself. Basing it on whether the address turns out to be reachable
+		// would mean deciding on a timer, and a node that is merely slow to
+		// learn its public address is not a node that needs a broker. When the
+		// direct path cannot deliver, that is reported as an error and retried,
+		// rather than papered over with a name nobody asked for.
+		if m.ipCerts != nil {
+			if listensOnPort(h, m.ipCerts.port, m.ipCerts.allowPrivate) {
+				log.Infof("listening on port %d, so this node will certify its own address instead of registering with a broker", m.ipCerts.port)
+				m.ipCerts.start(m.ctx, h)
+				return
+			}
+			m.ipCerts.useBroker()
+			log.Infof("not listening on port %d, where a certificate authority validates an address, so this node registers a name with the broker at %s instead", m.ipCerts.port, m.forgeRegistrationEndpoint)
+		}
+
 		name := certName(h.ID(), m.forgeDomain)
 		certExists := localCertExists(m.ctx, m.certmagic, name)
-
-		// With IP certificates enabled the broker is a fallback, not the
-		// first choice: a node the CA can reach certifies its own address and
-		// never registers with anyone. waitForFallback returns once that is
-		// known not to work, either because no address of ours can be
-		// validated or because every one of them failed.
-		//
-		// A certificate already in storage is loaded first either way. Serving
-		// one we hold costs the broker nothing, and withholding it would leave
-		// an upgrading node with no address to announce until the first IP
-		// certificate arrives.
-		if m.ipCerts != nil {
-			go m.ipCerts.start(m.ctx, h)
-			if certExists {
-				log.Infof("found preexisting cert for %q in local storage, serving it while we try to certify our own address", name)
-				if err := m.certmagic.ManageAsync(m.ctx, []string{name}); err != nil {
-					log.Error(err)
-				}
-			}
-			if !m.ipCerts.waitForFallback(m.ctx) {
-				return
-			}
-			if certExists {
-				// Already managed above; renewals go through the broker from
-				// here, as they did before.
-				return
-			}
-			log.Infof("no address of ours can be certified directly, falling back to the broker at %s", m.forgeRegistrationEndpoint)
-		}
 		startCertManagement := func() {
 			if !certExists {
 				// respect WithRegistrationDelay

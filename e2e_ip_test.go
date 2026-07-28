@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,8 +43,50 @@ import (
 // is pointed at the port the node did get, through the same WithIPCertPort
 // option that exists for exactly this.
 func TestLibp2pIPCertE2E(t *testing.T) {
-	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		// ip is the address the node listens on and asks to have certified.
+		ip string
+		// caValidity is the certificate lifetime pebble hands out, in seconds.
+		// Zero leaves pebble's default, which is far too long to watch expire.
+		caValidity uint64
+		clientOpts []client.P2PForgeCertMgrOptions
+		// awaitRenewal waits for a second certificate to replace the first.
+		awaitRenewal bool
+	}{
+		{
+			name: "IPv4",
+			ip:   "127.0.0.1",
+		},
+		{
+			name: "IPv6",
+			ip:   "::1",
+		},
+		{
+			// A certificate for an address lasts days rather than months, so
+			// renewal is the normal case, not an edge one. A 25 second
+			// lifetime puts the renewal window about 8 seconds out, and
+			// checking every 2 seconds gives the maintenance loop several
+			// chances to notice inside the test's budget.
+			name: "a certificate that runs out is renewed",
+			// A different loopback address than the other cases: certmagic
+			// keeps in-flight challenges in one process-wide map keyed by
+			// identifier, so subtests running in parallel must not ask for the
+			// same address at the same time.
+			ip:           "127.0.0.2",
+			caValidity:   25,
+			clientOpts:   []client.P2PForgeCertMgrOptions{client.WithRenewCheckInterval(2 * time.Second)},
+			awaitRenewal: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testIPCert(t, tt.ip, tt.caValidity, tt.awaitRenewal, tt.clientOpts)
+		})
+	}
+}
 
+func testIPCert(t *testing.T, nodeIP string, caValidity uint64, awaitRenewal bool, extraOpts []client.P2PForgeCertMgrOptions) {
 	// The node listens on this port and Pebble connects back to it, so both
 	// have to agree on it before either starts.
 	nodePort := reserveLoopbackPort(t)
@@ -63,7 +107,7 @@ func TestLibp2pIPCertE2E(t *testing.T) {
 	caProfiles := map[string]pebbleCA.Profile{
 		client.DefaultIPCertProfile: {
 			Description:    "short-lived profile for IP address certificates",
-			ValidityPeriod: 160 * 60 * 60, // seconds, matching Let's Encrypt
+			ValidityPeriod: caValidity, // zero leaves pebble's own default
 		},
 	}
 	ca := pebbleCA.New(logger, db, "", "rsa", 0, 1, caProfiles)
@@ -96,12 +140,13 @@ func TestLibp2pIPCertE2E(t *testing.T) {
 	acmeRoots := x509.NewCertPool()
 	acmeRoots.AppendCertsFromPEM(acmeCertPEM)
 
-	sk, err := generateTestIdentity("TestLibp2pIPCertE2E", "")
+	certRenewed := make(chan struct{}, 1)
+	sk, err := generateTestIdentity("TestLibp2pIPCertE2E", t.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	certMgr, err := client.NewP2PForgeCertMgr(
+	opts := append([]client.P2PForgeCertMgrOptions{
 		client.WithForgeDomain(forge),
 		client.WithForgeRegistrationEndpoint(brokerSrv.URL),
 		client.WithCAEndpoint(fmt.Sprintf("https://%s%s", acmeListener.Addr(), pebbleWFE.DirectoryPath)),
@@ -112,7 +157,15 @@ func TestLibp2pIPCertE2E(t *testing.T) {
 		client.WithAllowPrivateForgeAddrs(),
 		client.WithIPCerts(),
 		client.WithIPCertPort(nodePort),
-	)
+		client.WithOnCertRenewed(func() {
+			select {
+			case certRenewed <- struct{}{}:
+			default:
+			}
+		}),
+	}, extraOpts...)
+
+	certMgr, err := client.NewP2PForgeCertMgr(opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +175,7 @@ func TestLibp2pIPCertE2E(t *testing.T) {
 
 	// A plain /tls/ws listener, with no wildcard SNI: this node has no
 	// brokered name and does not need one.
-	listenAddr := fmt.Sprintf("/ip4/127.0.0.1/tcp/%d/tls/ws", nodePort)
+	listenAddr := fmt.Sprintf("/%s/%s/tcp/%d/tls/ws", ipProtocol(nodeIP), nodeIP, nodePort)
 	h, err := libp2p.New(
 		libp2p.Identity(sk),
 		libp2p.ListenAddrStrings(listenAddr),
@@ -142,12 +195,12 @@ func TestLibp2pIPCertE2E(t *testing.T) {
 	}
 
 	// The certificate covers the address itself, with no name anywhere in it.
-	leaf := peerLeafCert(t, fmt.Sprintf("127.0.0.1:%d", nodePort), ca)
+	leaf := peerLeafCert(t, net.JoinHostPort(nodeIP, strconv.Itoa(nodePort)), nodeIP, ca)
 	if len(leaf.DNSNames) != 0 {
 		t.Errorf("certificate carries DNS names %v, expected an address only", leaf.DNSNames)
 	}
-	if len(leaf.IPAddresses) != 1 || leaf.IPAddresses[0].String() != "127.0.0.1" {
-		t.Errorf("certificate covers %v, expected 127.0.0.1", leaf.IPAddresses)
+	if len(leaf.IPAddresses) != 1 || leaf.IPAddresses[0].String() != nodeIP {
+		t.Errorf("certificate covers %v, expected %s", leaf.IPAddresses, nodeIP)
 	}
 
 	// A second node dials the announced address and completes the libp2p
@@ -169,9 +222,32 @@ func TestLibp2pIPCertE2E(t *testing.T) {
 		t.Fatalf("dialing %s: %v", wantAddr, err)
 	}
 
+	if awaitRenewal {
+		select {
+		case <-certRenewed:
+		case <-time.After(60 * time.Second):
+			t.Fatal("certificate was never renewed")
+		}
+		renewed := peerLeafCert(t, net.JoinHostPort(nodeIP, strconv.Itoa(nodePort)), nodeIP, ca)
+		if renewed.NotAfter.Compare(leaf.NotAfter) <= 0 {
+			t.Errorf("certificate served after renewal still expires at %s, same as before", renewed.NotAfter)
+		}
+		if len(renewed.IPAddresses) != 1 || renewed.IPAddresses[0].String() != nodeIP {
+			t.Errorf("renewed certificate covers %v, expected %s", renewed.IPAddresses, nodeIP)
+		}
+	}
+
 	if hits := brokerHits.Load(); hits != 0 {
 		t.Errorf("node made %d requests to the broker, expected none", hits)
 	}
+}
+
+// ipProtocol returns the multiaddr protocol name for an address literal.
+func ipProtocol(ip string) string {
+	if strings.Contains(ip, ":") {
+		return "ip6"
+	}
+	return "ip4"
 }
 
 // reserveLoopbackPort picks a free TCP port. It carries the usual race of
@@ -208,13 +284,13 @@ func awaitAddr(t *testing.T, h interface{ Addrs() []multiaddr.Multiaddr }, want 
 
 // peerLeafCert returns the certificate a node serves on a plain TLS dial that
 // carries no SNI, which is what a client dialing an address does.
-func peerLeafCert(t *testing.T, addr string, ca *pebbleCA.CAImpl) *x509.Certificate {
+func peerLeafCert(t *testing.T, addr, serverName string, ca *pebbleCA.CAImpl) *x509.Certificate {
 	t.Helper()
 	roots := x509.NewCertPool()
 	roots.AddCert(ca.GetRootCert(0).Cert)
 	conn, err := tls.Dial("tcp", addr, &tls.Config{
 		RootCAs:    roots,
-		ServerName: "127.0.0.1", // an address, so Go verifies it against the IP SANs and sends no SNI
+		ServerName: serverName, // an address, so Go verifies it against the IP SANs and sends no SNI
 		NextProtos: []string{"h2", "http/1.1"},
 	})
 	if err != nil {
