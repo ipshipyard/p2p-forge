@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ✨ `client`: a libp2p host that listens on TCP port 443 can now get its TLS certificate for its own IP address, straight from the certificate authority, instead of registering a name with a forge broker. Enable it with `WithIPCerts`. The authority validates the address by connecting to it and running the ACME TLS-ALPN-01 challenge, which the WebSocket TLS listener already on that port answers, so no extra port is opened and nothing else is exposed. Such a host announces `/ipX/<ip>/tcp/443/tls/ws` and contacts no broker at all.
+  - The listener decides which path a host takes and there is no crossing over: with one on port 443 a host only ever asks for a certificate for its own address, and a failure is logged as an error and retried rather than turning into a brokered name nobody asked for. Without one, a host registers a name as before.
+  - `WithIPCertPort` and `WithIPCertProfile` cover the two things a non-public authority needs: the port it validates on, and turning off the short-lived profile that Let's Encrypt requires and a private CA may not offer.
+  - Certificates for IP addresses are short-lived, about six days, so a host has to stay online to keep renewing. Requests are paced to stay inside the authority's rate limits, and the pace is written to storage so restarts cannot spend the budget.
+
 ### Changed
 
 ### Fixed
