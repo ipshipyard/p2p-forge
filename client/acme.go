@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"net"
 	"net/http"
@@ -557,6 +559,10 @@ func (m *P2PForgeCertMgr) Start() error {
 
 		name := certName(h.ID(), m.forgeDomain)
 		certExists := localCertExists(m.ctx, m.certmagic, name)
+
+		if certExists && dropLocalCertIfExpired(m.ctx, log, m.certmagic, name) {
+			certExists = false
+		}
 		startCertManagement := func() {
 			if !certExists {
 				// respect WithRegistrationDelay
@@ -752,6 +758,76 @@ func localCertExists(ctx context.Context, cfg *certmagic.Config, name string) bo
 	acmeIssuer := cfg.Issuers[0].(*certmagic.ACMEIssuer)
 	certKey := certmagic.StorageKeys.SiteCert(acmeIssuer.IssuerKey(), name)
 	return cfg.Storage.Exists(ctx, certKey)
+}
+
+// dropLocalCertIfExpired discards the certificate stored for passed name when
+// it is already past NotAfter, and returns true if it did so.
+//
+// An expired cert is not renewable: the CA no longer considers it a current
+// certificate, so renewal orders referencing it via the ARI 'replaces' field
+// get rejected (RFC 9773, section 5, servers SHOULD reject newOrder when
+// 'replaces' checks fail: https://www.rfc-editor.org/rfc/rfc9773.html#section-5;
+// Let's Encrypt returns HTTP 404 urn:ietf:params:acme:error:malformed) and
+// certmagic keeps retrying the same doomed renewal forever. Discarding the
+// cert routes us through fresh issuance, which sends no 'replaces' field.
+// This happens when a node is offline long enough for its cert to lapse
+// (e.g. hardware failure) and then comes back.
+func dropLocalCertIfExpired(ctx context.Context, log *zap.SugaredLogger, cfg *certmagic.Config, name string) bool {
+	expiry, ok := localCertExpiry(ctx, cfg, name)
+	if !ok || time.Now().Before(expiry) {
+		return false
+	}
+	log.Infof("discarding cert for %q which expired at %s: fresh issuance is required because CA rejects renewals of certificates it no longer knows", name, expiry)
+	if err := forgetLocalCert(ctx, cfg, name); err != nil {
+		log.Errorf("failed to discard expired cert for %q: %s", name, err)
+		return false
+	}
+	return true
+}
+
+// localCertExpiry returns NotAfter of the certificate stored for passed name.
+// ok is false when the certificate is missing or cannot be parsed.
+func localCertExpiry(ctx context.Context, cfg *certmagic.Config, name string) (expiry time.Time, ok bool) {
+	if cfg == nil || cfg.Storage == nil || len(cfg.Issuers) == 0 {
+		return time.Time{}, false
+	}
+	acmeIssuer := cfg.Issuers[0].(*certmagic.ACMEIssuer)
+	certKey := certmagic.StorageKeys.SiteCert(acmeIssuer.IssuerKey(), name)
+	pemBundle, err := cfg.Storage.Load(ctx, certKey)
+	if err != nil {
+		return time.Time{}, false
+	}
+	block, _ := pem.Decode(pemBundle)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return time.Time{}, false
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return leaf.NotAfter, true
+}
+
+// forgetLocalCert removes the certificate stored for passed name along with
+// its private key and metadata, so the next issuance is a fresh obtain
+// instead of a renewal of the removed certificate.
+func forgetLocalCert(ctx context.Context, cfg *certmagic.Config, name string) error {
+	if cfg == nil || cfg.Storage == nil || len(cfg.Issuers) == 0 {
+		return errors.New("certmagic config with Storage and Issuers is required")
+	}
+	acmeIssuer := cfg.Issuers[0].(*certmagic.ACMEIssuer)
+	issuerKey := acmeIssuer.IssuerKey()
+	var errs []error
+	for _, key := range []string{
+		certmagic.StorageKeys.SiteCert(issuerKey, name),
+		certmagic.StorageKeys.SitePrivateKey(issuerKey, name),
+		certmagic.StorageKeys.SiteMeta(issuerKey, name),
+	} {
+		if err := cfg.Storage.Delete(ctx, key); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("deleting %q: %w", key, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // certName returns a string with DNS wildcard for use in TLS cert ("*.peerid.forgeDomain")
