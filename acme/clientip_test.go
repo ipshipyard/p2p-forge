@@ -9,65 +9,69 @@ import (
 )
 
 func TestClientIPs(t *testing.T) {
+	const trustedHeader = "CF-Connecting-IP"
 	tests := []struct {
-		name       string
-		xff        string
-		remoteAddr string
-		expected   []netip.Addr
+		name          string
+		trustedHeader string // the header name to trust, "" = trust none
+		headers       map[string]string
+		remoteAddr    string
+		expected      []netip.Addr
 	}{
 		{
-			name:       "XFF single IP",
-			xff:        "1.2.3.4",
-			remoteAddr: "",
-			expected:   []netip.Addr{netip.MustParseAddr("1.2.3.4")},
+			name:       "leftmost XFF is never trusted",
+			headers:    map[string]string{"X-Forwarded-For": "1.2.3.4, 5.6.7.8"},
+			remoteAddr: "9.9.9.9:80",
+			expected:   []netip.Addr{netip.MustParseAddr("9.9.9.9")},
 		},
 		{
-			name:       "XFF multiple IPs uses leftmost",
-			xff:        "1.2.3.4, 5.6.7.8, 9.10.11.12",
-			remoteAddr: "",
-			expected:   []netip.Addr{netip.MustParseAddr("1.2.3.4")},
+			name:          "trusted header is honored",
+			trustedHeader: trustedHeader,
+			headers:       map[string]string{trustedHeader: "1.2.3.4"},
+			remoteAddr:    "9.9.9.9:80",
+			expected:      []netip.Addr{netip.MustParseAddr("1.2.3.4"), netip.MustParseAddr("9.9.9.9")},
 		},
 		{
-			name:       "RemoteAddr IPv4 with port",
-			xff:        "",
-			remoteAddr: "1.2.3.4:8080",
-			expected:   []netip.Addr{netip.MustParseAddr("1.2.3.4")},
+			name:          "spoofed XFF ignored even with trusted header configured",
+			trustedHeader: trustedHeader,
+			headers:       map[string]string{"X-Forwarded-For": "1.2.3.4"},
+			remoteAddr:    "9.9.9.9:80",
+			expected:      []netip.Addr{netip.MustParseAddr("9.9.9.9")},
 		},
 		{
 			name:       "RemoteAddr IPv6 with port",
-			xff:        "",
 			remoteAddr: "[::1]:8080",
 			expected:   []netip.Addr{netip.MustParseAddr("::1")},
 		},
 		{
-			name:       "both XFF and RemoteAddr",
-			xff:        "1.2.3.4",
-			remoteAddr: "5.6.7.8:8080",
-			expected:   []netip.Addr{netip.MustParseAddr("1.2.3.4"), netip.MustParseAddr("5.6.7.8")},
-		},
-		{
-			name:       "empty headers",
-			xff:        "",
-			remoteAddr: "",
-			expected:   nil,
-		},
-		{
-			name:       "XFF with spaces",
-			xff:        "  1.2.3.4  ",
-			remoteAddr: "",
-			expected:   []netip.Addr{netip.MustParseAddr("1.2.3.4")},
-		},
-		{
-			name:       "invalid XFF skipped",
-			xff:        "not-an-ip",
-			remoteAddr: "1.2.3.4:80",
-			expected:   []netip.Addr{netip.MustParseAddr("1.2.3.4")},
-		},
-		{
 			name:       "RemoteAddr without port",
-			xff:        "",
 			remoteAddr: "1.2.3.4",
 			expected:   []netip.Addr{netip.MustParseAddr("1.2.3.4")},
+		},
+		{
+			name:          "invalid trusted header value skipped",
+			trustedHeader: trustedHeader,
+			headers:       map[string]string{trustedHeader: "not-an-ip"},
+			remoteAddr:    "1.2.3.4:80",
+			expected:      []netip.Addr{netip.MustParseAddr("1.2.3.4")},
+		},
+		{
+			name:          "trusted header with ip:port is accepted",
+			trustedHeader: trustedHeader,
+			headers:       map[string]string{trustedHeader: "1.2.3.4:5678"},
+			remoteAddr:    "9.9.9.9:80",
+			expected:      []netip.Addr{netip.MustParseAddr("1.2.3.4"), netip.MustParseAddr("9.9.9.9")},
+		},
+		{
+			name:          "trusted header with bracketed ipv6 and port is accepted",
+			trustedHeader: trustedHeader,
+			headers:       map[string]string{trustedHeader: "[2001:db8::1]:443"},
+			remoteAddr:    "9.9.9.9:80",
+			expected:      []netip.Addr{netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("9.9.9.9")},
+		},
+		{
+			name:       "empty",
+			remoteAddr: "",
+			expected:   nil,
 		},
 	}
 
@@ -77,11 +81,11 @@ func TestClientIPs(t *testing.T) {
 				Header:     make(http.Header),
 				RemoteAddr: tt.remoteAddr,
 			}
-			if tt.xff != "" {
-				r.Header.Set("X-Forwarded-For", tt.xff)
+			for k, v := range tt.headers {
+				r.Header.Set(k, v)
 			}
 
-			got := clientIPs(r)
+			got := clientIPs(r, tt.trustedHeader)
 			assert.Equal(t, tt.expected, got)
 		})
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
@@ -18,6 +19,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -117,7 +119,7 @@ func NewTestInfrastructure(t *testing.T) *TestInfrastructure {
 		errors
 		ipparser %s
 		acme %s {
-			registration-domain %s listen-address=:%d external-tls=true
+			registration-domain %s listen-address=:%d external-tls=true allow-private-addresses=true
 			database-type badger %s
         }
 	}`, forge, forge, forgeRegistration, httpPort, tmpDir)
@@ -293,6 +295,75 @@ func TestSetACMEChallenge(t *testing.T) {
 	}
 
 	peerIDb36, err := peer.ToCid(h.ID()).StringOfBase(multibase.Base36)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := new(dns.Msg)
+	m.Question = make([]dns.Question, 1)
+	m.Question[0] = dns.Question{Qclass: dns.ClassINET, Name: fmt.Sprintf("_acme-challenge.%s.%s.", peerIDb36, forge), Qtype: dns.TypeTXT}
+
+	r, err := dns.Exchange(m, testInfra.DNSServerUDPAddress)
+	if err != nil {
+		t.Fatalf("Could not send message: %s", err)
+	}
+	if r.Rcode != dns.RcodeSuccess || len(r.Answer) == 0 {
+		t.Fatalf("Expected successful reply with TXT value, got empty %s", dns.RcodeToString[r.Rcode])
+	}
+	expectedAnswer := fmt.Sprintf(`%s	10	IN	TXT	"%s"`, m.Question[0].Name, testChallenge)
+	if r.Answer[0].String() != expectedAnswer {
+		t.Fatalf("Expected %s reply, got %s", expectedAnswer, r.Answer[0].String())
+	}
+}
+
+// TestSetACMEChallengeV2 exercises the full v2 stack: an RFC 9421-signed
+// registration (no libp2p PeerID-auth handshake), the SSRF-hardened dialback,
+// and the unchanged DNS-01 TXT readback.
+func TestSetACMEChallengeV2(t *testing.T) {
+	t.Parallel()
+	testInfra := NewTestInfrastructure(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sk, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sk.Raw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signingKey, err := client.NewEd25519SigningKey(ed25519.PrivateKey(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := peer.IDFromPublicKey(sk.GetPublic())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The node serves its ownership proof at a local origin the forge fetches.
+	mux := http.NewServeMux()
+	proofSrv := httptest.NewServer(mux)
+	defer proofSrv.Close()
+	proofHandler, err := client.OwnershipProofHandler(signingKey, proofSrv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux.Handle("/", proofHandler)
+
+	testDigest := sha256.Sum256([]byte("test-v2"))
+	testChallenge := base64.RawURLEncoding.EncodeToString(testDigest[:])
+
+	err = client.SendChallengeV2(ctx, fmt.Sprintf("http://127.0.0.1:%d", testInfra.HTTPPort), signingKey, testChallenge, []string{proofSrv.URL}, authToken, "", func(req *http.Request) error {
+		req.Host = forgeRegistration
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	peerIDb36, err := peer.ToCid(pid).StringOfBase(multibase.Base36)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1052,7 +1123,7 @@ func NewTestInfrastructureWithDenylist(t *testing.T, cfg DenylistTestConfig) *Te
 		%s
 		ipparser %s
 		acme %s {
-			registration-domain %s listen-address=:%d external-tls=true
+			registration-domain %s listen-address=:%d external-tls=true allow-private-addresses=true
 			database-type badger %s
         }
 	}`, denylistBlock.String(), forge, forge, forgeRegistration, httpPort, tmpDir)

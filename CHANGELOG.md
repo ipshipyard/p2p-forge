@@ -13,10 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- ✨ New `/v2` registration API that authenticates with [HTTP Message Signatures (RFC 9421)](https://www.rfc-editor.org/rfc/rfc9421) plus [Digest Fields (RFC 9530)](https://www.rfc-editor.org/rfc/rfc9530) over an Ed25519 `did:key`, so a client can register without a libp2p HTTP stack. A node proves it controls a real endpoint by serving a signed proof at `/.well-known/autotls/<did:key>`, no libp2p needed. The `/v1` PeerID-auth API is unchanged and runs alongside it. See [docs/registration-v2.md](docs/registration-v2.md).
+- New `acme` config: `allow-private-addresses=true` (an argument on the `registration-domain` line that turns off every reachability safeguard for local testing or trusted private deployments, default false) and the `client-ip-header` directive (names the trusted proxy header for the real client IP, e.g. `CF-Connecting-IP`; `X-Forwarded-For` is refused).
 
 ### Changed
+- The reachability dialback now refuses to dial non-public destinations (loopback, RFC1918, CGNAT, link-local, cloud-metadata, and IPv4-embedding IPv6 ranges), pins resolved IPs against DNS rebinding, caps the address count, and bounds the dial with a timeout. Set `allow-private-addresses true` to restore the previous behavior for local testing.
 
 ### Fixed
+- `X-Forwarded-For` is no longer trusted for the client IP used by the denylist. Only the direct connection address, plus a header named via `client-ip-header`, is trusted, so a client can no longer forge its way around an IP denylist entry.
 
 ## [v0.10.1] - 2026-07-29
 

@@ -158,7 +158,8 @@ ipparser FORGE_DOMAIN
 
 ~~~
 acme FORGE_DOMAIN {
-	[registration-domain REGISTRATION_DOMAIN [listen-address=ADDRESS] [external-tls=true|false]
+	[registration-domain REGISTRATION_DOMAIN [listen-address=ADDRESS] [external-tls=true|false] [allow-private-addresses=true|false]
+	[client-ip-header HEADER_NAME]
 	[database-type DB_TYPE [...DB_ARGS]]
 }
 ~~~
@@ -167,6 +168,8 @@ acme FORGE_DOMAIN {
 - **REGISTRATION_DOMAIN** the HTTP API domain used by clients to send requests for setting ACME challenges (e.g. `registration.libp2p.direct`)
    - **ADDRESS** is the address and port for the internal HTTP server to listen on (e.g. :1234), defaults to `:443`.
    - `external-tls` should be set to `true` if the TLS termination (and validation of the registration domain name) will happen externally or should be handled locally, defaults to false
+   - `allow-private-addresses` turns off every reachability safeguard: destination-IP vetting, the address caps, the dialback IP pinning, and the verification timeouts. Defaults to false. Use it only for local testing or a private deployment that trusts submitted addresses; never on a public instance.
+- **HEADER_NAME** (`client-ip-header`) names the header the fronting proxy sets with the real client IP (e.g. `CF-Connecting-IP` behind Cloudflare), used for the denylist. The value may be a bare IP or `ip:port`. It must be a single-value header your proxy controls; `X-Forwarded-For` is refused at startup because a client can prepend to it. Without it, only the direct connection address is trusted. Request rate limiting is not done by the forge; configure it on your reverse proxy, CDN, or load balancer.
 - **DB_TYPE** is the type of the backing database used for storing the ACME challenges. Options include:
   - `dynamo TABLE_NAME` for production-grade key-value store shared across multiple instances (where all credentials are set via AWS' standard environment variables: `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
   - `badger DB_PATH` for local key-value store (good for local development and testing)
@@ -225,30 +228,21 @@ Other address formats (e.g. the dual IPv6/IPv4 format) are not supported
 
 ### Submitting Challenge Records
 
-To claim a domain name like `<peerID>.libp2p.direct` requires:
-1. The private key corresponding to the given peerID
-2. A publicly reachable libp2p endpoint with 
-   - one of the following libp2p transport configurations:
-     - QUIC-v1
-     - TCP or WS or WSS, Yamux, TLS or Noise
-     - WebTransport
-     - Other transports are under consideration (e.g. HTTP), if they are of interest please file an issue
-   - the [Identify protocol](https://github.com/libp2p/specs/tree/master/identify) (`/ipfs/id/1.0.0`)
+To claim a name like `<peerID>.libp2p.direct` a node proves two things to the
+forge: it holds the private key for `<peerID>`, and it controls a real, publicly
+reachable endpoint. There are two registration APIs:
 
-To set an ACME challenge send an HTTP request to the server (for libp2p.direct this is registration.libp2p.direct)
-```shell
-curl -X POST "https://registration.libp2p.direct/v1/_acme-challenge" \
--H "Authorization: libp2p-PeerID bearer=\"<base64-encoded-opaque-blob>\""
--H "Content-Type: application/json" \
--d '{
-  "Value": "your_acme_challenge_token",
-  "Addresses": ["your", "multiaddrs"]
-}'
-```
+- **`/v1`** authenticates with the libp2p HTTP PeerID-auth handshake and proves
+  reachability with a libp2p dialback. It requires a libp2p client. The
+  client-facing flow is specified in the libp2p [AutoTLS client spec](https://github.com/libp2p/specs/blob/master/tls/autotls-client.md).
+- **`/v2`** authenticates with HTTP Message Signatures (RFC 9421) over an
+  Ed25519 `did:key`, so any HTTP client can register without libp2p.
+  Reachability is proven with a signed proof the forge fetches over HTTP. See
+  [docs/registration-v2.md](docs/registration-v2.md).
 
-Where the bearer token is derived via the [libp2p HTTP PeerID Auth Specification](https://github.com/libp2p/specs/blob/master/http/peer-id-auth.md).
+Both APIs write the same DNS-01 record and run side by side.
 
 ### Health Check
 
-`/v1/health` will always respond with HTTP 204
+`/v1/health` and `/v2/health` always respond with HTTP 204.
 

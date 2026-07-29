@@ -9,6 +9,7 @@ require (
 	github.com/caddyserver/certmagic v0.25.3
 	github.com/coredns/caddy v1.1.4
 	github.com/coredns/coredns v1.14.3
+	github.com/dunglas/httpsfv v1.1.0
 	github.com/felixge/httpsnoop v1.0.4
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gaissmai/bart v0.28.0
@@ -24,9 +25,11 @@ require (
 	github.com/multiformats/go-multiaddr v0.16.1
 	github.com/multiformats/go-multiaddr-dns v0.5.0
 	github.com/multiformats/go-multibase v0.3.0
+	github.com/multiformats/go-multicodec v0.9.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/slok/go-http-metrics v0.13.0
 	github.com/stretchr/testify v1.11.1
+	github.com/yaronf/httpsign v0.5.2
 	go.uber.org/zap v1.28.0
 )
 
@@ -61,12 +64,12 @@ require (
 	github.com/dgraph-io/badger/v4 v4.5.1 // indirect
 	github.com/dgraph-io/ristretto/v2 v2.1.0 // indirect
 	github.com/dgryski/go-farm v0.0.0-20240924180020-3414d57e47da // indirect
-	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/flynn/go-shlex v0.0.0-20150515145356-3f9db97f8568 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
-	github.com/golang-jwt/jwt/v5 v5.3.0 // indirect
+	github.com/goccy/go-json v0.10.3 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/google/flatbuffers v24.12.23+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -81,6 +84,17 @@ require (
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/koron/go-ssdp v0.0.6 // indirect
+	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
+	github.com/lestrrat-go/dsig v1.0.0 // indirect
+	github.com/lestrrat-go/dsig-secp256k1 v1.0.0 // indirect
+	github.com/lestrrat-go/httpcc v1.0.1 // indirect
+	github.com/lestrrat-go/httprc v1.0.6 // indirect
+	github.com/lestrrat-go/httprc/v3 v3.0.1 // indirect
+	github.com/lestrrat-go/iter v1.0.2 // indirect
+	github.com/lestrrat-go/jwx/v2 v2.1.2 // indirect
+	github.com/lestrrat-go/jwx/v3 v3.0.12 // indirect
+	github.com/lestrrat-go/option v1.0.1 // indirect
+	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
 	github.com/letsencrypt/challtestsrv v1.4.2 // indirect
 	github.com/libdns/libdns v1.1.1 // indirect
 	github.com/libp2p/go-buffer-pool v0.1.0 // indirect
@@ -101,7 +115,6 @@ require (
 	github.com/multiformats/go-base32 v0.1.0 // indirect
 	github.com/multiformats/go-base36 v0.2.0 // indirect
 	github.com/multiformats/go-multiaddr-fmt v0.1.0 // indirect
-	github.com/multiformats/go-multicodec v0.9.1 // indirect
 	github.com/multiformats/go-multihash v0.2.3 // indirect
 	github.com/multiformats/go-multistream v0.6.1 // indirect
 	github.com/multiformats/go-varint v0.0.7 // indirect
@@ -137,7 +150,9 @@ require (
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/quic-go/webtransport-go v0.10.0 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
+	github.com/valyala/fastjson v1.6.4 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	go.opencensus.io v0.24.0 // indirect

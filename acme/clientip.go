@@ -9,30 +9,31 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
-// clientIPs extracts client IPs from request: both X-Forwarded-For and RemoteAddr.
-// Returns all valid IPs found (may be 0, 1, or 2 IPs).
+// clientIPs returns the client IPs to check against the denylist: the direct
+// connection address, plus the address from trustedHeader when the operator has
+// configured one (e.g. CF-Connecting-IP behind Cloudflare).
 //
-// X-Forwarded-For spoofing is not a security concern here because:
-//  1. We also check all IPs from the multiaddrs in the request body
-//  2. The actual A/AAAA record being requested must match a multiaddr IP
-//  3. An attacker cannot spoof the multiaddr IPs they're connecting from
-//
-// The client IP check is defense-in-depth; the multiaddr check is authoritative.
-func clientIPs(r *http.Request) []netip.Addr {
+// A leftmost X-Forwarded-For is never trusted: any client can forge it, which
+// would let an attacker dodge an IP denylist entry or a per-IP rate limit. Only
+// a header the deployment's proxy is known to set, named via the
+// client-ip-header option, is honored.
+func clientIPs(r *http.Request, trustedHeader string) []netip.Addr {
 	var ips []netip.Addr
 
-	// Check X-Forwarded-For (leftmost = original client)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if comma := strings.Index(xff, ","); comma != -1 {
-			xff = xff[:comma]
-		}
-		xff = strings.TrimSpace(xff)
-		if ip, err := netip.ParseAddr(xff); err == nil {
-			ips = append(ips, ip)
+	if trustedHeader != "" {
+		if v := strings.TrimSpace(r.Header.Get(trustedHeader)); v != "" {
+			if ip, ok := parseHeaderIP(v); ok {
+				ips = append(ips, ip)
+			} else {
+				// The proxy is expected to set a single IP here. A value we
+				// cannot parse means the denylist would silently fall back to
+				// the proxy's own address, so make the misconfiguration
+				// visible instead.
+				log.Warningf("%s header value %q is not an IP; ignoring it for the denylist", trustedHeader, v)
+			}
 		}
 	}
 
-	// Also check RemoteAddr (direct connection IP)
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
@@ -42,6 +43,18 @@ func clientIPs(r *http.Request) []netip.Addr {
 	}
 
 	return ips
+}
+
+// parseHeaderIP parses a proxy-set client-IP header value, accepting either a
+// bare IP or an "ip:port" pair (some proxies append the source port).
+func parseHeaderIP(v string) (netip.Addr, bool) {
+	if ip, err := netip.ParseAddr(v); err == nil {
+		return ip, true
+	}
+	if ap, err := netip.ParseAddrPort(v); err == nil {
+		return ap.Addr(), true
+	}
+	return netip.Addr{}, false
 }
 
 // multiaddrsToIPs extracts IP addresses from multiaddr strings.

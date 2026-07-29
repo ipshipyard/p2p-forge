@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -31,11 +33,9 @@ import (
 	"github.com/caddyserver/certmagic"
 
 	"github.com/ipfs/go-datastore"
-	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	httppeeridauth "github.com/libp2p/go-libp2p/p2p/http/auth"
-	"github.com/multiformats/go-multiaddr"
 )
 
 var log = clog.NewWithPlugin(pluginName)
@@ -47,7 +47,19 @@ const healthcheckApiPath = "/v1/health"
 type acmeWriter struct {
 	Addr        string
 	Domain      string
+	ForgeDomain string
 	ExternalTLS bool
+
+	// AllowPrivateAddrs disables every reachability safeguard: destination-IP
+	// vetting, the address caps, the dialback IP pinning, and the probe and
+	// overall verification timeouts. Off by default; intended for tests and
+	// private deployments that trust the submitted addresses.
+	AllowPrivateAddrs bool
+
+	// ClientIPHeader, when set, names the request header the fronting proxy
+	// populates with the real client IP (e.g. CF-Connecting-IP). Empty means
+	// only the direct connection address is trusted.
+	ClientIPHeader string
 
 	Datastore datastore.TTLDatastore
 
@@ -115,7 +127,7 @@ func (c *acmeWriter) OnStartup() error {
 			}
 			if c.forgeAuthKey != "" {
 				auth := r.Header.Get(client.ForgeAuthHeader)
-				if c.forgeAuthKey != auth {
+				if !constantTimeEqual(auth, c.forgeAuthKey) {
 					w.WriteHeader(http.StatusForbidden)
 					fmt.Fprintf(w, "403 Forbidden: Missing %s header.", client.ForgeAuthHeader)
 					return
@@ -154,14 +166,14 @@ func (c *acmeWriter) OnStartup() error {
 			}
 
 			// Check denylist before attempting to connect
-			if blocked, reason := checkDenylist(clientIPs(r), typedBody.Addresses); blocked {
+			if blocked, reason := checkDenylist(clientIPs(r, c.ClientIPHeader), typedBody.Addresses); blocked {
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte(fmt.Sprintf("403 Forbidden: %s", reason)))
 				return
 			}
 
 			httpUserAgent := r.Header.Get("User-Agent")
-			if err := testAddresses(r.Context(), peerID, typedBody.Addresses, httpUserAgent); err != nil {
+			if err := c.testAddresses(r.Context(), peerID, typedBody.Addresses, httpUserAgent); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(fmt.Sprintf("error testing addresses: %s", err)))
 				return
@@ -210,6 +222,12 @@ func (c *acmeWriter) OnStartup() error {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// v2 registration API: RFC 9421-signed, no libp2p PeerID-auth handshake.
+	mux.Handle("POST "+registrationV2ApiPath, std.Handler(registrationV2ApiPath, httpMetricsMiddleware, http.HandlerFunc(c.handleV2Challenge)))
+	mux.HandleFunc("GET "+healthV2ApiPath, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	c.handler = withRequestLogger(mux)
 
 	go func() {
@@ -231,43 +249,6 @@ func withRequestLogger(next http.Handler) http.Handler {
 			log.Infof("%s %s (status=%d dt=%s ua=%q)", r.Method, r.URL, m.Code, m.Duration, r.UserAgent())
 		}
 	})
-}
-
-func testAddresses(ctx context.Context, p peer.ID, addrs []string, httpUserAgent string) error {
-	agentVersion := agentType(httpUserAgent)
-	h, err := libp2p.New(libp2p.NoListenAddrs, libp2p.DisableRelay())
-	if err != nil {
-		recordPeerProbe("error", agentVersion)
-		return err
-	}
-	defer h.Close()
-
-	var mas []multiaddr.Multiaddr
-	for _, addr := range addrs {
-		ma, err := multiaddr.NewMultiaddr(addr)
-		if err != nil {
-			recordPeerProbe("error", agentVersion)
-			return err
-		}
-		mas = append(mas, ma)
-	}
-
-	err = h.Connect(ctx, peer.AddrInfo{ID: p, Addrs: mas})
-	if err != nil {
-		recordPeerProbe("error", agentVersion)
-		return err
-	}
-
-	// TODO: Do we need to listen on the identify event instead?
-	if v, err := h.Peerstore().Get(p, "AgentVersion"); err == nil {
-		if vs, ok := v.(string); ok {
-			// if we had successful libp2p identify we prefer agentVersion from it
-			agentVersion = vs
-		}
-	}
-	log.Debugf("connected to peer %s - UserAgent: %q", p, agentVersion)
-	recordPeerProbe("ok", agentType(agentVersion))
-	return nil
 }
 
 // agentType returns bound cardinality agent label for metrics.
@@ -299,21 +280,36 @@ func agentType(agentVersion string) string {
 	return "other"
 }
 
+// constantTimeEqual compares two secrets without leaking where they differ,
+// hashing first so a length difference leaks nothing either.
+func constantTimeEqual(a, b string) bool {
+	ha := sha256.Sum256([]byte(a))
+	hb := sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(ha[:], hb[:]) == 1
+}
+
 type requestBody struct {
 	Value     string   `json:"value"`
 	Addresses []string `json:"addresses"`
 }
 
-// checkDenylist checks client IPs and multiaddr IPs against denylist.
-// Returns (blocked, reason) where reason describes which IP was blocked.
-// Blocks if ANY IP is denied.
+// checkDenylist checks the client IPs and the submitted multiaddr IPs against
+// the denylist, blocking if any is denied. Returns (blocked, reason).
 func checkDenylist(clientIPs []netip.Addr, multiaddrs []string) (bool, string) {
+	if blocked, reason := denylistClientIPs(clientIPs); blocked {
+		return true, reason
+	}
+	return denylistAddresses(multiaddrs)
+}
+
+// denylistClientIPs checks only the client IPs (the trusted header and the
+// direct connection address), so a denylisted caller can be rejected before
+// any signature or dialback work.
+func denylistClientIPs(clientIPs []netip.Addr) (bool, string) {
 	mgr := denylist.GetManager()
 	if mgr == nil {
 		return false, ""
 	}
-
-	// Check all client IPs (XFF and RemoteAddr)
 	for _, client := range clientIPs {
 		if !client.IsValid() {
 			continue
@@ -322,14 +318,21 @@ func checkDenylist(clientIPs []netip.Addr, multiaddrs []string) (bool, string) {
 			return true, fmt.Sprintf("client IP %s blocked by %s", client, result.Name)
 		}
 	}
+	return false, ""
+}
 
-	// Check multiaddr IPs
+// denylistAddresses checks the IPs carried in the submitted multiaddrs. It does
+// not see behind a /dns name; testAddresses re-checks resolved IPs.
+func denylistAddresses(multiaddrs []string) (bool, string) {
+	mgr := denylist.GetManager()
+	if mgr == nil {
+		return false, ""
+	}
 	for _, ip := range multiaddrsToIPs(multiaddrs) {
 		if denied, result := mgr.Check(ip); denied {
 			return true, fmt.Sprintf("multiaddr IP %s blocked by %s", ip, result.Name)
 		}
 	}
-
 	return false, ""
 }
 

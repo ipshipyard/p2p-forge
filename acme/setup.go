@@ -61,6 +61,8 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 	var forgeDomain string
 	var forgeRegistrationDomain string
 	var externalTLS bool
+	var allowPrivateAddrs bool
+	var clientIPHeader string
 	var httpListenAddr string
 	var ds datastore.TTLDatastore
 
@@ -80,7 +82,7 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 			switch c.Val() {
 			case "registration-domain":
 				args := c.RemainingArgs()
-				if len(args) > 3 || len(args) == 0 {
+				if len(args) > 4 || len(args) == 0 {
 					return nil, nil, c.ArgErr()
 				}
 
@@ -102,10 +104,29 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 						if err != nil {
 							return nil, nil, c.ArgErr()
 						}
+					case "allow-private-addresses":
+						var err error
+						allowPrivateAddrs, err = strconv.ParseBool(v)
+						if err != nil {
+							return nil, nil, c.ArgErr()
+						}
 					default:
 						return nil, nil, c.ArgErr()
 					}
 				}
+			case "client-ip-header":
+				args := c.RemainingArgs()
+				if len(args) != 1 {
+					return nil, nil, c.ArgErr()
+				}
+				// X-Forwarded-For is a client-appendable list, so trusting it
+				// would hand the denylist a caller-forged leftmost value. Only
+				// a single-value header the proxy sets (e.g. CF-Connecting-IP)
+				// is safe here.
+				if strings.EqualFold(args[0], "X-Forwarded-For") {
+					return nil, nil, c.Errf("client-ip-header must not be X-Forwarded-For; use a single-value header your proxy sets, such as CF-Connecting-IP")
+				}
+				clientIPHeader = args[0]
 			case "database-type":
 				args := c.RemainingArgs()
 				if len(args) == 0 {
@@ -162,10 +183,13 @@ func parse(c *caddy.Controller) (*acmeReader, *acmeWriter, error) {
 	initMetrics()
 
 	writer := &acmeWriter{
-		Addr:        httpListenAddr,
-		Domain:      forgeRegistrationDomain,
-		Datastore:   ds,
-		ExternalTLS: externalTLS,
+		Addr:              httpListenAddr,
+		Domain:            forgeRegistrationDomain,
+		ForgeDomain:       forgeDomain,
+		Datastore:         ds,
+		ExternalTLS:       externalTLS,
+		AllowPrivateAddrs: allowPrivateAddrs,
+		ClientIPHeader:    clientIPHeader,
 	}
 	reader := &acmeReader{
 		ForgeDomain: forgeDomain,

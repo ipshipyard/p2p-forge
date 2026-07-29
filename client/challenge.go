@@ -67,18 +67,8 @@ func SendChallenge(ctx context.Context, baseURL string, privKey crypto.PrivKey, 
 		return err
 	}
 
-	// Adjust headers if needed
-	if forgeAuth != "" {
-		req.Header.Set(ForgeAuthHeader, forgeAuth)
-	}
-	if userAgent == "" {
-		userAgent = defaultUserAgent
-	}
-	req.Header.Set("User-Agent", userAgent)
-	if modifyForgeRequest != nil {
-		if err := modifyForgeRequest(req); err != nil {
-			return err
-		}
+	if err := decorateForgeRequest(req, forgeAuth, userAgent, modifyForgeRequest); err != nil {
+		return err
 	}
 
 	httpClient := o.httpClient
@@ -110,11 +100,38 @@ func SendChallenge(ctx context.Context, baseURL string, privKey crypto.PrivKey, 
 	if err != nil {
 		return fmt.Errorf("libp2p HTTP ClientPeerIDAuth error at %s: %w", registrationURL, err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s error from %s: %q", resp.Status, registrationURL, respBody)
+		return renderChallengeError(resp, registrationURL)
 	}
 	return nil
+}
+
+// decorateForgeRequest applies the headers common to v1 and v2 registration
+// requests (the optional Forge-Authorization token and a User-Agent) and runs
+// the caller's modifyForgeRequest hook.
+func decorateForgeRequest(req *http.Request, forgeAuth, userAgent string, modifyForgeRequest func(*http.Request) error) error {
+	if forgeAuth != "" {
+		req.Header.Set(ForgeAuthHeader, forgeAuth)
+	}
+	if userAgent == "" {
+		userAgent = defaultUserAgent
+	}
+	req.Header.Set("User-Agent", userAgent)
+	if modifyForgeRequest != nil {
+		return modifyForgeRequest(req)
+	}
+	return nil
+}
+
+// renderChallengeError builds an error from a non-200 registration response,
+// reading a bounded slice of the body for context. The caller closes resp.Body.
+func renderChallengeError(resp *http.Response, registrationURL string) error {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	if err != nil {
+		return fmt.Errorf("%s from %s (reading error body failed: %w)", resp.Status, registrationURL, err)
+	}
+	return fmt.Errorf("%s error from %s: %q", resp.Status, registrationURL, body)
 }
 
 // ChallengeRequest creates an HTTP Request object for submitting an ACME challenge to the p2p-forge HTTP server for a given peerID.
@@ -127,7 +144,6 @@ func ChallengeRequest(ctx context.Context, registrationURL string, challenge str
 	for i, addr := range addrs {
 		maStrs[i] = addr.String()
 	}
-
 	body, err := json.Marshal(&struct {
 		Value     string   `json:"value"`
 		Addresses []string `json:"addresses"`
@@ -136,7 +152,7 @@ func ChallengeRequest(ctx context.Context, registrationURL string, challenge str
 		Addresses: maStrs,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("marshaling challenge body: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", registrationURL, bytes.NewReader(body))
